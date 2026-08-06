@@ -1,14 +1,23 @@
 {
   "name": "workflow-engine",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "Generic workflow engine",
+  "private": true,
+  "type": "module",
+  "main": "src/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "lint": "eslint .",
+    "format": "prettier --write ."
   },
-  "keywords": [],
+  "keywords": [
+    "workflow",
+    "express",
+    "nodejs"
+  ],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^5.2.1",

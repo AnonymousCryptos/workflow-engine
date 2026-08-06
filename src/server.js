@@ -1,3 +1,7 @@
 import app from "./app.js";
 
-app.listen(...);
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+    console.log(`🚀 Workflow Engine running on port ${PORT}`);
+});

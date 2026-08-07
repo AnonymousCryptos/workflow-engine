@@ -2,10 +2,12 @@ import express from "express";
 import dotenv from "dotenv";
 
 import { getPool } from "./config/database.js";
+import workflowRoutes from "./routes/workflow.routes.js";
 
 dotenv.config();
 
 const app = express();
+app.use(express.json());
 
 app.get("/", async (req, res) => {
     try {
@@ -29,5 +31,8 @@ app.get("/", async (req, res) => {
         });
     }
 });
+
+// Register workflow routes
+app.use("/api/v1/workflows", workflowRoutes);
 
 export default app;

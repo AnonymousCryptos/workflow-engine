@@ -7,7 +7,8 @@ export async function createWorkflowRun({
     activeStageData,
     stageId,
     stageData,
-    remark
+    remark,
+    completed
 }) {
     const pool = getPool();
 
@@ -24,20 +25,110 @@ export async function createWorkflowRun({
                 workflow_id,
                 status,
                 current_stage_id,
-                active_stage_data
+                active_stage_data,
+                completed_at
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             `,
             [
                 referenceId,
                 workflowId,
-                "running",
+                completed ? "completed" : "running",
                 currentStageId,
-                JSON.stringify(activeStageData)
+                JSON.stringify(activeStageData),
+                completed
+                    ? new Date()
+                    : null
             ]
         );
 
-        const workflowRunId = runResult.insertId;
+        const workflowRunId =
+            runResult.insertId;
+
+        await connection.query(
+            `
+            INSERT INTO workflow_stage_history
+            (
+                workflow_run_id,
+                stage_id,
+                stage_data,
+                remark,
+                completed_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            `,
+            [
+                workflowRunId,
+                stageId,
+                JSON.stringify(stageData),
+                remark || null,
+                completed
+                    ? new Date()
+                    : new Date()
+            ]
+        );
+
+        await connection.commit();
+
+        return workflowRunId;
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
+    }
+}
+
+export async function submitWorkflowStage({
+    workflowRunId,
+    nextStageId,
+    stageId,
+    stageData,
+    remark,
+    completed
+}) {
+    const pool = getPool();
+
+    const connection = await pool.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        const [runRows] = await connection.query(
+            `
+            SELECT
+                id,
+                status,
+                current_stage_id
+            FROM workflow_runs
+            WHERE id = ?
+            FOR UPDATE
+            `,
+            [workflowRunId]
+        );
+
+        if (runRows.length === 0) {
+            throw new Error(
+                "Workflow run not found"
+            );
+        }
+
+        const run = runRows[0];
+
+        if (run.status === "completed") {
+            throw new Error(
+                "Workflow run is already completed"
+            );
+        }
+
+        if (
+            Number(run.current_stage_id) !==
+            Number(stageId)
+        ) {
+            throw new Error(
+                "Submitted stage is not the current stage"
+            );
+        }
 
         await connection.query(
             `
@@ -59,9 +150,28 @@ export async function createWorkflowRun({
             ]
         );
 
-        await connection.commit();
+        await connection.query(
+            `
+            UPDATE workflow_runs
+            SET
+                current_stage_id = ?,
+                status = ?,
+                completed_at = ?
+            WHERE id = ?
+            `,
+            [
+                nextStageId,
+                completed
+                    ? "completed"
+                    : "running",
+                completed
+                    ? new Date()
+                    : null,
+                workflowRunId
+            ]
+        );
 
-        return workflowRunId;
+        await connection.commit();
     } catch (error) {
         await connection.rollback();
         throw error;
@@ -70,7 +180,52 @@ export async function createWorkflowRun({
     }
 }
 
-export async function getWorkflowRunForPdf(workflowRunId) {
+export async function getWorkflowRunById(
+    workflowRunId
+) {
+    const pool = getPool();
+
+    const [rows] = await pool.query(
+        `
+        SELECT
+            id,
+            reference_id,
+            workflow_id,
+            status,
+            current_stage_id,
+            active_stage_data,
+            completed_at,
+            created_at,
+            updated_at
+        FROM workflow_runs
+        WHERE id = ?
+        LIMIT 1
+        `,
+        [workflowRunId]
+    );
+
+    if (rows.length === 0) {
+        return null;
+    }
+
+    const run = rows[0];
+
+    return {
+        id: run.id,
+        referenceId: run.reference_id,
+        workflowId: run.workflow_id,
+        status: run.status,
+        currentStageId: run.current_stage_id,
+        activeStageData: run.active_stage_data,
+        completedAt: run.completed_at,
+        createdAt: run.created_at,
+        updatedAt: run.updated_at
+    };
+}
+
+export async function getWorkflowRunForPdf(
+    workflowRunId
+) {
     const pool = getPool();
 
     const [rows] = await pool.query(
@@ -106,8 +261,13 @@ export async function getWorkflowRunForPdf(workflowRunId) {
     };
 }
 
-export async function getSkuDetailsForPdf(skuNames) {
-    if (!Array.isArray(skuNames) || skuNames.length === 0) {
+export async function getSkuDetailsForPdf(
+    skuNames
+) {
+    if (
+        !Array.isArray(skuNames) ||
+        skuNames.length === 0
+    ) {
         return [];
     }
 
@@ -130,4 +290,177 @@ export async function getSkuDetailsForPdf(skuNames) {
     );
 
     return rows;
+}
+
+export async function getActiveWorkflowRuns() {
+    const pool = getPool();
+
+    const [rows] = await pool.query(
+        `
+        SELECT
+            id,
+            reference_id,
+            workflow_id,
+            status,
+            current_stage_id,
+            active_stage_data,
+            completed_at,
+            created_at,
+            updated_at
+        FROM workflow_runs
+        WHERE status = 'running'
+        ORDER BY updated_at DESC
+        `
+    );
+
+    return rows.map((run) => ({
+        id: run.id,
+        referenceId: run.reference_id,
+        workflowId: run.workflow_id,
+        status: run.status,
+        currentStageId: run.current_stage_id,
+        activeStageData: run.active_stage_data,
+        completedAt: run.completed_at,
+        createdAt: run.created_at,
+        updatedAt: run.updated_at
+    }));
+}
+
+export async function getWorkflowRunHistory({
+    page,
+    limit
+}) {
+    const pool = getPool();
+
+    const offset =
+        (page - 1) * limit;
+
+    const [countRows] =
+        await pool.query(
+            `
+            SELECT COUNT(*) AS total
+            FROM workflow_runs
+            `
+        );
+
+    const total =
+        Number(countRows[0].total);
+
+    const [rows] =
+        await pool.query(
+            `
+            SELECT
+                wr.id,
+                wr.reference_id,
+                wr.workflow_id,
+                w.name AS workflow_name,
+                JSON_UNQUOTE(
+                    JSON_EXTRACT(
+                        first_stage.stage_data,
+                        '$.reference_name'
+                    )
+                ) AS reference_name,
+                wr.status,
+                wr.current_stage_id,
+                wr.completed_at,
+                wr.created_at,
+                wr.updated_at
+            FROM workflow_runs wr
+            INNER JOIN workflows w
+                ON w.id = wr.workflow_id
+            LEFT JOIN workflow_stage_history first_stage
+                ON first_stage.workflow_run_id = wr.id
+                AND first_stage.id = (
+                    SELECT MIN(wsh_first.id)
+                    FROM workflow_stage_history wsh_first
+                    WHERE wsh_first.workflow_run_id = wr.id
+                )
+            ORDER BY wr.created_at DESC
+            LIMIT ? OFFSET ?
+            `,
+            [limit, offset]
+        );
+
+    return {
+        rows: rows.map((run) => ({
+            id: run.id,
+            referenceId: run.reference_id,
+            referenceName: run.reference_name,
+            workflowId: run.workflow_id,
+            workflowName: run.workflow_name,
+            status: run.status,
+            currentStageId:
+                run.current_stage_id,
+            completedAt:
+                run.completed_at,
+            createdAt:
+                run.created_at,
+            updatedAt:
+                run.updated_at
+        })),
+        total
+    };
+}
+
+export async function getWorkflowStageHistory({
+    workflowRunId,
+    page,
+    limit
+}) {
+    const pool = getPool();
+
+    const offset =
+        (page - 1) * limit;
+
+    const [countRows] =
+        await pool.query(
+            `
+            SELECT COUNT(*) AS total
+            FROM workflow_stage_history
+            WHERE workflow_run_id = ?
+            `,
+            [workflowRunId]
+        );
+
+    const total =
+        Number(countRows[0].total);
+
+    const [rows] =
+        await pool.query(
+            `
+            SELECT
+                id,
+                workflow_run_id,
+                stage_id,
+                stage_data,
+                remark,
+                entered_at,
+                completed_at
+            FROM workflow_stage_history
+            WHERE workflow_run_id = ?
+            ORDER BY entered_at ASC, id ASC
+            LIMIT ? OFFSET ?
+            `,
+            [
+                workflowRunId,
+                limit,
+                offset
+            ]
+        );
+
+    return {
+        rows: rows.map((stage) => ({
+            id: stage.id,
+            workflowRunId:
+                stage.workflow_run_id,
+            stageId: stage.stage_id,
+            stageData: stage.stage_data,
+            remark: stage.remark,
+            enteredAt:
+                stage.entered_at,
+            completedAt:
+                stage.completed_at
+        })),
+        total
+    };
 }

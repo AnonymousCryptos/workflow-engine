@@ -14,7 +14,8 @@ const MASTER_CONFIG = {
     user: {
         table: "users",
         labelField: "name",
-        valueField: "name"
+        valueField: "name",
+        idField: "id"
     }
 };
 
@@ -43,15 +44,15 @@ export async function searchMaster(master, search = "", page = 1, limit = 20) {
 
     const query = `
         SELECT
+            ${config.idField ? `${config.idField} AS id,` : ""}
             ${config.valueField} AS value,
             ${config.labelField} AS label
         FROM ${config.table}
         WHERE is_active = 1
-          AND ${config.labelField} LIKE ?
+        AND ${config.labelField} LIKE ?
         ORDER BY ${config.labelField}
         LIMIT ? OFFSET ?
     `;
-
     const [rows] = await pool.query(query, [
         `%${search}%`,
         limit,

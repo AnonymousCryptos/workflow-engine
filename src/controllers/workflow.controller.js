@@ -69,7 +69,8 @@ export async function createWorkflowRun(
         const result =
             await createWorkflowRunService({
                 workflowId,
-                stageData
+                stageData,
+                userId: req.user.userId
             });
 
         res.status(201).json({
@@ -181,13 +182,17 @@ export async function submitWorkflowStage(
     res
 ) {
     try {
-        const { id } = req.params;
-        const { stageData } = req.body;
+        const { id } =
+            req.params;
+
+        const { stageData } =
+            req.body;
 
         const result =
             await submitWorkflowStageService({
                 workflowRunId: id,
-                stageData
+                stageData,
+                userId: req.user.userId
             });
 
         res.json({
@@ -209,7 +214,8 @@ export async function getWorkflowById(
     res
 ) {
     try {
-        const { id } = req.params;
+        const { id } =
+            req.params;
 
         const workflow =
             await getWorkflowByIdService(id);
@@ -219,8 +225,6 @@ export async function getWorkflowById(
             data: workflow
         });
     } catch (error) {
-        console.error(error);
-
         res.status(404).json({
             success: false,
             message: error.message
@@ -233,7 +237,8 @@ export async function downloadWorkflowPdf(
     res
 ) {
     try {
-        const { id } = req.params;
+        const { id } =
+            req.params;
 
         const pdf =
             await generateWorkflowPdf(id);
@@ -264,7 +269,8 @@ export async function getWorkflowRunById(
     res
 ) {
     try {
-        const { id } = req.params;
+        const { id } =
+            req.params;
 
         const run =
             await getWorkflowRunByIdService(
@@ -276,8 +282,6 @@ export async function getWorkflowRunById(
             data: run
         });
     } catch (error) {
-        console.error(error);
-
         res.status(404).json({
             success: false,
             message: error.message

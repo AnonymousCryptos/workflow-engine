@@ -10,8 +10,15 @@ import {
     getActiveWorkflowRuns,
     getWorkflowRunHistory,
     getWorkflowStageHistory,
+    getPreviousStageHistory,
     submitWorkflowStage
 } from "../database/workflowRun.repository.js";
+
+import {
+    generateWorkflowPdf
+} from "../services/workflowPdf.service.js";
+
+import { getPool } from "../config/database.js";
 
 function validateFields(
     fields,
@@ -118,7 +125,84 @@ function validateFields(
     }
 }
 
-function validateWorkflow(workflow) {
+function validateAssignedUsers(
+    value,
+    scope
+) {
+    if (value === "anyone") {
+        return "anyone";
+    }
+
+    if (!Array.isArray(value)) {
+        throw new Error(
+            `${scope} must be "anyone" or an array of user IDs`
+        );
+    }
+
+    if (value.length === 0) {
+        throw new Error(
+            `${scope} must contain at least one user`
+        );
+    }
+
+    const seen = new Set();
+    const normalized = [];
+
+    for (const userId of value) {
+        if (userId === "anyone") {
+            throw new Error(
+                `${scope} cannot contain "anyone" together with user IDs`
+            );
+        }
+
+        const numericUserId =
+            Number(userId);
+
+        if (
+            !Number.isInteger(
+                numericUserId
+            ) ||
+            numericUserId < 1
+        ) {
+            throw new Error(
+                `${scope} must contain only valid user IDs`
+            );
+        }
+
+        if (
+            seen.has(
+                numericUserId
+            )
+        ) {
+            throw new Error(
+                `${scope} cannot contain duplicate user IDs`
+            );
+        }
+
+        seen.add(
+            numericUserId
+        );
+
+        normalized.push(
+            numericUserId
+        );
+    }
+
+    return normalized;
+}
+
+function validateCanCreate(
+    value
+) {
+    return validateAssignedUsers(
+        value,
+        "canCreate"
+    );
+}
+
+function validateWorkflow(
+    workflow
+) {
     if (
         !workflow ||
         typeof workflow !== "object"
@@ -138,6 +222,21 @@ function validateWorkflow(workflow) {
     }
 
     if (
+        !Object.prototype.hasOwnProperty.call(
+            workflow,
+            "canCreate"
+        )
+    ) {
+        throw new Error(
+            "Workflow canCreate is required"
+        );
+    }
+
+    validateCanCreate(
+        workflow.canCreate
+    );
+
+    if (
         !Array.isArray(workflow.stages) ||
         workflow.stages.length === 0
     ) {
@@ -148,7 +247,14 @@ function validateWorkflow(workflow) {
 
     const stageIds = new Set();
 
-    for (const stage of workflow.stages) {
+    for (
+        let index = 0;
+        index < workflow.stages.length;
+        index++
+    ) {
+        const stage =
+            workflow.stages[index];
+
         if (
             !stage ||
             typeof stage !== "object" ||
@@ -169,13 +275,17 @@ function validateWorkflow(workflow) {
             );
         }
 
-        if (stageIds.has(stage.id)) {
+        if (
+            stageIds.has(stage.id)
+        ) {
             throw new Error(
                 `Duplicate stage id "${stage.id}"`
             );
         }
 
-        stageIds.add(stage.id);
+        stageIds.add(
+            stage.id
+        );
 
         if (
             typeof stage.name !== "string" ||
@@ -186,7 +296,9 @@ function validateWorkflow(workflow) {
             );
         }
 
-        if (!Array.isArray(stage.fields)) {
+        if (
+            !Array.isArray(stage.fields)
+        ) {
             throw new Error(
                 `Stage "${stage.name}" must contain a fields array`
             );
@@ -196,6 +308,79 @@ function validateWorkflow(workflow) {
             stage.fields,
             `fields of stage "${stage.name}"`
         );
+
+        /*
+         * Every stage except the final
+         * stage must contain exactly one
+         * assigned_users field.
+         *
+         * assigned_users represents the
+         * users who may perform the NEXT
+         * stage.
+         */
+        if (
+            index <
+            workflow.stages.length - 1
+        ) {
+            const assignedUsersFields =
+                stage.fields.filter(
+                    (field) =>
+                        field.key ===
+                        "assigned_users"
+                );
+
+            if (
+                assignedUsersFields.length !==
+                1
+            ) {
+                throw new Error(
+                    `Stage "${stage.name}" must contain exactly one assigned_users field`
+                );
+            }
+
+            const assignedUsersField =
+                assignedUsersFields[0];
+
+            if (
+                assignedUsersField.dataType !==
+                    "array" ||
+                assignedUsersField.component !==
+                    "array"
+            ) {
+                throw new Error(
+                    `The assigned_users field in stage "${stage.name}" must be an array field`
+                );
+            }
+
+            if (
+                assignedUsersField.required !==
+                true
+            ) {
+                throw new Error(
+                    `The assigned_users field in stage "${stage.name}" must be required`
+                );
+            }
+        } else {
+            /*
+             * Final stage has no next stage,
+             * therefore it must not define
+             * assigned_users.
+             */
+            const assignedUsersFields =
+                stage.fields.filter(
+                    (field) =>
+                        field.key ===
+                        "assigned_users"
+                );
+
+            if (
+                assignedUsersFields.length > 0
+            ) {
+                throw new Error(
+                    `Final stage "${stage.name}" must not contain an assigned_users field`
+                );
+            }
+        }
     }
 }
 
@@ -238,10 +423,14 @@ function applySystemControlledFields(
                     "defaultValue"
                 )
             ) {
-                normalizedData[field.key] =
+                normalizedData[
+                    field.key
+                ] =
                     field.defaultValue;
             } else {
-                delete normalizedData[field.key];
+                delete normalizedData[
+                    field.key
+                ];
             }
 
             continue;
@@ -250,11 +439,25 @@ function applySystemControlledFields(
         if (
             field.dataType === "array" &&
             Array.isArray(
-                normalizedData[field.key]
+                normalizedData[
+                    field.key
+                ]
             )
         ) {
-            normalizedData[field.key] =
-                normalizedData[field.key].map(
+            if (
+                field.key === "assigned_users" &&
+                normalizedData[field.key].length === 1 &&
+                normalizedData[field.key][0] === "anyone"
+            ) {
+                continue;
+            }
+
+            normalizedData[
+                field.key
+            ] =
+                normalizedData[
+                    field.key
+                ].map(
                     (row) =>
                         applySystemControlledFields(
                             field.fields || [],
@@ -267,13 +470,158 @@ function applySystemControlledFields(
     return normalizedData;
 }
 
+function normalizeAssignedUsers(
+    value
+) {
+    if (
+        value === "anyone" ||
+        (
+            Array.isArray(value) &&
+            value.length === 1 &&
+            value[0] === "anyone"
+        )
+    ) {
+        return "anyone";
+    }
+
+    if (!Array.isArray(value)) {
+        return null;
+    }
+
+    const normalized =
+        value.map((item) => {
+            if (
+                item &&
+                typeof item === "object" &&
+                item.user_id !== undefined
+            ) {
+                return Number(
+                    item.user_id
+                );
+            }
+
+            return Number(item);
+        });
+
+    if (
+        normalized.some(
+            (userId) =>
+                !Number.isInteger(
+                    userId
+                ) ||
+                userId < 1
+        )
+    ) {
+        return null;
+    }
+
+    if (
+        new Set(normalized).size !==
+        normalized.length
+    ) {
+        return null;
+    }
+
+    return normalized;
+}
+
+function isUserAllowed(
+    assignedUsers,
+    userId
+) {
+    if (
+        assignedUsers ===
+        "anyone" ||
+        (
+            Array.isArray(assignedUsers) &&
+            assignedUsers.includes("anyone")
+        )
+    ) {
+        return true;
+    }
+
+    if (
+        !Array.isArray(
+            assignedUsers
+        )
+    ) {
+        return false;
+    }
+
+    return assignedUsers.includes(
+        Number(userId)
+    );
+}
+
+async function validateUserIdsExist(
+    userIds,
+    scope
+) {
+    if (userIds === "anyone") {
+        return;
+    }
+
+    const pool = getPool();
+
+    const [rows] =
+        await pool.query(
+            `
+            SELECT
+                id
+            FROM users
+            WHERE id IN (?)
+              AND is_active = TRUE
+            `,
+            [userIds]
+        );
+
+    const existingIds =
+        new Set(
+            rows.map(
+                (user) =>
+                    Number(user.id)
+            )
+        );
+
+    for (const userId of userIds) {
+        if (
+            !existingIds.has(
+                Number(userId)
+            )
+        ) {
+            throw new Error(
+                `${scope} contains an invalid or inactive user ID: ${userId}`
+            );
+        }
+    }
+}
+
 export async function createWorkflowService(
     workflow
 ) {
-    validateWorkflow(workflow);
+    const normalizedCanCreate =
+        validateCanCreate(
+            workflow?.canCreate
+        );
 
+    const normalizedWorkflow = {
+        ...workflow,
+        canCreate:
+            normalizedCanCreate
+    };
+
+    validateWorkflow(
+        normalizedWorkflow
+    );
+
+    await validateUserIdsExist(
+        normalizedWorkflow.canCreate,
+        "canCreate"
+    );
     const workflowId =
-        await createWorkflow(workflow);
+        await createWorkflow(
+            normalizedWorkflow
+        );
 
     return workflowId;
 }
@@ -284,7 +632,8 @@ export async function getAllWorkflowsService() {
 
 export async function createWorkflowRunService({
     workflowId,
-    stageData
+    stageData,
+    userId
 }) {
     if (!workflowId) {
         throw new Error(
@@ -292,9 +641,16 @@ export async function createWorkflowRunService({
         );
     }
 
+    if (!userId) {
+        throw new Error(
+            "Authenticated user is required"
+        );
+    }
+
     if (
         !stageData ||
-        typeof stageData !== "object" ||
+        typeof stageData !==
+            "object" ||
         Array.isArray(stageData)
     ) {
         throw new Error(
@@ -303,7 +659,9 @@ export async function createWorkflowRunService({
     }
 
     const workflow =
-        await getWorkflowById(workflowId);
+        await getWorkflowById(
+            workflowId
+        );
 
     if (!workflow) {
         throw new Error(
@@ -318,11 +676,38 @@ export async function createWorkflowRunService({
     }
 
     if (
-        !Array.isArray(workflow.stages) ||
+        !Array.isArray(
+            workflow.stages
+        ) ||
         workflow.stages.length === 0
     ) {
         throw new Error(
             "Workflow has no stages"
+        );
+    }
+
+    const normalizedUserId =
+        Number(userId);
+
+    if (
+        !Number.isInteger(
+            normalizedUserId
+        ) ||
+        normalizedUserId < 1
+    ) {
+        throw new Error(
+            "Invalid authenticated user"
+        );
+    }
+
+    if (
+        !isUserAllowed(
+            workflow.canCreate,
+            normalizedUserId
+        )
+    ) {
+        throw new Error(
+            "You are not allowed to create a run for this workflow"
         );
     }
 
@@ -335,8 +720,38 @@ export async function createWorkflowRunService({
             stageData
         );
 
+    /*
+     * Stage 1 assignment is for
+     * the next stage.
+     */
+    if (
+        workflow.stages.length > 1
+    ) {
+        const assignedUsers =
+            normalizeAssignedUsers(
+                normalizedStageData
+                    .assigned_users
+            );
+
+        if (!assignedUsers) {
+            throw new Error(
+                `Stage "${firstStage.name}" must contain valid assigned_users for the next stage`
+            );
+        }
+
+        await validateUserIdsExist(
+            assignedUsers,
+            "assigned_users for the next stage"
+        );
+
+        normalizedStageData
+            .assigned_users =
+            assignedUsers;
+    }
+
     const nextStage =
-        workflow.stages[1] || null;
+        workflow.stages[1] ||
+        null;
 
     const isCompleted =
         nextStage === null;
@@ -353,13 +768,18 @@ export async function createWorkflowRunService({
                     ? firstStage.id
                     : nextStage.id,
             activeStageData: {},
-            stageId: firstStage.id,
+            stageId:
+                firstStage.id,
             stageData:
                 normalizedStageData,
             remark:
-                normalizedStageData.remark ||
+                normalizedStageData
+                    .remark ||
                 null,
-            completed: isCompleted
+            performedBy:
+                normalizedUserId,
+            completed:
+                isCompleted
         });
 
     return {
@@ -378,7 +798,8 @@ export async function createWorkflowRunService({
 
 export async function submitWorkflowStageService({
     workflowRunId,
-    stageData
+    stageData,
+    userId
 }) {
     if (!workflowRunId) {
         throw new Error(
@@ -386,13 +807,34 @@ export async function submitWorkflowStageService({
         );
     }
 
+    if (!userId) {
+        throw new Error(
+            "Authenticated user is required"
+        );
+    }
+
     if (
         !stageData ||
-        typeof stageData !== "object" ||
+        typeof stageData !==
+            "object" ||
         Array.isArray(stageData)
     ) {
         throw new Error(
             "Stage data is required"
+        );
+    }
+
+    const normalizedUserId =
+        Number(userId);
+
+    if (
+        !Number.isInteger(
+            normalizedUserId
+        ) ||
+        normalizedUserId < 1
+    ) {
+        throw new Error(
+            "Invalid authenticated user"
         );
     }
 
@@ -407,7 +849,10 @@ export async function submitWorkflowStageService({
         );
     }
 
-    if (run.status === "completed") {
+    if (
+        run.status ===
+        "completed"
+    ) {
         throw new Error(
             "Workflow run is already completed"
         );
@@ -428,13 +873,89 @@ export async function submitWorkflowStageService({
         workflow.stages.findIndex(
             (stage) =>
                 Number(stage.id) ===
-                Number(run.currentStageId)
+                Number(
+                    run.currentStageId
+                )
         );
 
-    if (currentStageIndex === -1) {
+    if (
+        currentStageIndex === -1
+    ) {
         throw new Error(
             `Current stage "${run.currentStageId}" not found in workflow`
         );
+    }
+
+    /*
+     * Stage 1 is controlled by
+     * workflow.canCreate.
+     *
+     * Every later stage gets its
+     * authorization from assigned_users
+     * stored in the PREVIOUS stage's
+     * stageData.
+     */
+    if (
+        currentStageIndex > 0
+    ) {
+        const previousStage =
+            workflow.stages[
+                currentStageIndex - 1
+            ];
+
+        const previousHistory =
+            await getPreviousStageHistory(
+                workflowRunId,
+                previousStage.id
+            );
+
+        if (!previousHistory) {
+            throw new Error(
+                "Previous stage history not found"
+            );
+        }
+
+        let previousStageData =
+            previousHistory.stageData;
+
+        if (
+            typeof previousStageData ===
+            "string"
+        ) {
+            try {
+                previousStageData =
+                    JSON.parse(
+                        previousStageData
+                    );
+            } catch {
+                throw new Error(
+                    "Previous stage data is invalid"
+                );
+            }
+        }
+
+        const assignedUsers =
+            normalizeAssignedUsers(
+                previousStageData
+                    ?.assigned_users
+            );
+
+        if (!assignedUsers) {
+            throw new Error(
+                "No valid users are assigned to the current stage"
+            );
+        }
+
+        if (
+            !isUserAllowed(
+                assignedUsers,
+                normalizedUserId
+            )
+        ) {
+            throw new Error(
+                "You are not assigned to this stage"
+            );
+        }
     }
 
     const currentStage =
@@ -443,10 +964,11 @@ export async function submitWorkflowStageService({
         ];
 
     const normalizedStageData =
-        applySystemControlledFields(
-            currentStage.fields || [],
-            stageData
-        );
+            applySystemControlledFields(
+                currentStage.fields || [],
+                stageData
+            );
+
 
     const nextStage =
         workflow.stages[
@@ -456,24 +978,57 @@ export async function submitWorkflowStageService({
     const isCompleted =
         nextStage === null;
 
+    /*
+     * The current stage stores
+     * assignment for the NEXT stage.
+     */
+    if (!isCompleted) {
+        const assignedUsers =
+            normalizeAssignedUsers(
+                normalizedStageData
+                    .assigned_users
+            );
+
+        if (!assignedUsers) {
+            throw new Error(
+                `Stage "${currentStage.name}" must contain valid assigned_users for the next stage`
+            );
+        }
+
+        await validateUserIdsExist(
+            assignedUsers,
+            "assigned_users for the next stage"
+        );
+
+        normalizedStageData
+            .assigned_users =
+            assignedUsers;
+    }
+
     await submitWorkflowStage({
         workflowRunId,
         nextStageId:
             isCompleted
                 ? currentStage.id
                 : nextStage.id,
-        stageId: currentStage.id,
+        stageId:
+            currentStage.id,
         stageData:
             normalizedStageData,
         remark:
-            normalizedStageData.remark ||
+            normalizedStageData
+                .remark ||
             null,
-        completed: isCompleted
+        performedBy:
+            normalizedUserId,
+        completed:
+            isCompleted
     });
 
     return {
         workflowRunId,
-        referenceId: run.referenceId,
+        referenceId:
+            run.referenceId,
         currentStageId:
             isCompleted
                 ? currentStage.id
@@ -482,15 +1037,13 @@ export async function submitWorkflowStageService({
             isCompleted
                 ? "completed"
                 : "running",
-        completed: isCompleted
+        completed:
+            isCompleted
     };
 }
 
 export async function getActiveWorkflowRunsService() {
-    const runs =
-        await getActiveWorkflowRuns();
-
-    return runs;
+    return await getActiveWorkflowRuns();
 }
 
 export async function getWorkflowRunHistoryService({
@@ -504,7 +1057,9 @@ export async function getWorkflowRunHistoryService({
         Number(limit);
 
     if (
-        !Number.isInteger(parsedPage) ||
+        !Number.isInteger(
+            parsedPage
+        ) ||
         parsedPage < 1
     ) {
         throw new Error(
@@ -513,7 +1068,9 @@ export async function getWorkflowRunHistoryService({
     }
 
     if (
-        !Number.isInteger(parsedLimit) ||
+        !Number.isInteger(
+            parsedLimit
+        ) ||
         parsedLimit < 1
     ) {
         throw new Error(
@@ -522,7 +1079,10 @@ export async function getWorkflowRunHistoryService({
     }
 
     const safeLimit =
-        Math.min(parsedLimit, 100);
+        Math.min(
+            parsedLimit,
+            100
+        );
 
     const result =
         await getWorkflowRunHistory({
@@ -563,7 +1123,9 @@ export async function getWorkflowStageHistoryService({
         Number(limit);
 
     if (
-        !Number.isInteger(parsedPage) ||
+        !Number.isInteger(
+            parsedPage
+        ) ||
         parsedPage < 1
     ) {
         throw new Error(
@@ -572,7 +1134,9 @@ export async function getWorkflowStageHistoryService({
     }
 
     if (
-        !Number.isInteger(parsedLimit) ||
+        !Number.isInteger(
+            parsedLimit
+        ) ||
         parsedLimit < 1
     ) {
         throw new Error(
@@ -581,7 +1145,10 @@ export async function getWorkflowStageHistoryService({
     }
 
     const safeLimit =
-        Math.min(parsedLimit, 100);
+        Math.min(
+            parsedLimit,
+            100
+        );
 
     const run =
         await getWorkflowRunById(
@@ -613,21 +1180,27 @@ export async function getWorkflowStageHistoryService({
         });
 
     const data =
-        result.rows.map((stage) => {
-            const workflowStage =
-                workflow.stages?.find(
-                    (item) =>
-                        Number(item.id) ===
-                        Number(stage.stageId)
-                );
+        result.rows.map(
+            (stage) => {
+                const workflowStage =
+                    workflow.stages?.find(
+                        (item) =>
+                            Number(
+                                item.id
+                            ) ===
+                            Number(
+                                stage.stageId
+                            )
+                    );
 
-            return {
-                ...stage,
-                stageName:
-                    workflowStage?.name ||
-                    `Stage ${stage.stageId}`
-            };
-        });
+                return {
+                    ...stage,
+                    stageName:
+                        workflowStage?.name ||
+                        `Stage ${stage.stageId}`
+                };
+            }
+        );
 
     return {
         data,
@@ -648,7 +1221,9 @@ export async function getWorkflowByIdService(
     workflowId
 ) {
     const workflow =
-        await getWorkflowById(workflowId);
+        await getWorkflowById(
+            workflowId
+        );
 
     if (!workflow) {
         throw new Error(

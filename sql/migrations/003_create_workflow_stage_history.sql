@@ -3,6 +3,8 @@ CREATE TABLE workflow_stage_history (
 
     workflow_run_id BIGINT UNSIGNED NOT NULL,
 
+    performed_by BIGINT UNSIGNED NOT NULL,
+
     stage_id INT NOT NULL,
 
     stage_data JSON,
@@ -15,5 +17,9 @@ CREATE TABLE workflow_stage_history (
 
     CONSTRAINT fk_workflow_stage_history_workflow_run
         FOREIGN KEY (workflow_run_id)
-        REFERENCES workflow_runs(id)
+        REFERENCES workflow_runs(id),
+
+    CONSTRAINT fk_workflow_stage_history_performed_by
+        FOREIGN KEY (performed_by)
+        REFERENCES users(id)
 );

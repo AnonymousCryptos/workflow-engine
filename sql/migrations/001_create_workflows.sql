@@ -5,6 +5,8 @@ CREATE TABLE workflows (
 
     description TEXT,
 
+    can_create JSON NOT NULL,
+
     stages JSON NOT NULL,
 
     is_active BOOLEAN NOT NULL DEFAULT TRUE,

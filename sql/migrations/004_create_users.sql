@@ -6,6 +6,10 @@ CREATE TABLE users
 
     email VARCHAR(255),
 
+    password_hash VARCHAR(255),
+
+    role VARCHAR(30) NOT NULL DEFAULT 'user',
+
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
 
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

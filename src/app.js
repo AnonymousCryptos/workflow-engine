@@ -5,6 +5,8 @@ import cors from "cors";
 import { getPool } from "./config/database.js";
 import workflowRoutes from "./routes/workflow.routes.js";
 import masterRoutes from "./routes/master.routes.js";
+import authRoutes from "./routes/auth.routes.js";
+import { authenticate } from "./middleware/auth.middleware.js";
 
 dotenv.config();
 
@@ -37,9 +39,14 @@ app.get("/", async (req, res) => {
     }
 });
 
-// Register workflow routes
-app.use("/api/v1/workflows", workflowRoutes);
+app.use(
+    "/api/v1/auth",
+    authRoutes
+);
 
-app.use("/api/v1/masters", masterRoutes);
+// Register workflow routes
+app.use("/api/v1/workflows", authenticate, workflowRoutes);
+
+app.use("/api/v1/masters", authenticate, masterRoutes);
 
 export default app;

@@ -9,10 +9,12 @@ export async function createWorkflow(workflow) {
         (
             name,
             description,
+            can_create,
             stages
         )
         VALUES
         (
+            ?,
             ?,
             ?,
             ?
@@ -21,7 +23,12 @@ export async function createWorkflow(workflow) {
         [
             workflow.name,
             workflow.description,
-            JSON.stringify(workflow.stages)
+            JSON.stringify(
+                workflow.canCreate
+            ),
+            JSON.stringify(
+                workflow.stages
+            )
         ]
     );
 
@@ -31,31 +38,55 @@ export async function createWorkflow(workflow) {
 export async function getAllWorkflows() {
     const pool = getPool();
 
-    const [rows] = await pool.query(`
+    const [rows] = await pool.query(
+        `
         SELECT
             id,
             name,
             description,
+            can_create,
             stages,
             is_active,
             created_at,
             updated_at
         FROM workflows
         ORDER BY id
-    `);
+        `
+    );
 
-    return rows.map(workflow => ({
-        id: workflow.id,
-        name: workflow.name,
-        description: workflow.description,
-        stages: workflow.stages,
-        isActive: Boolean(workflow.is_active),
-        createdAt: workflow.created_at,
-        updatedAt: workflow.updated_at
-    }));
+    return rows.map(
+        (workflow) => ({
+            id: workflow.id,
+
+            name:
+                workflow.name,
+
+            description:
+                workflow.description,
+
+            canCreate:
+                workflow.can_create,
+
+            stages:
+                workflow.stages,
+
+            isActive:
+                Boolean(
+                    workflow.is_active
+                ),
+
+            createdAt:
+                workflow.created_at,
+
+            updatedAt:
+                workflow.updated_at
+        })
+    );
 }
 
-export async function getWorkflowById(workflowId) {
+export async function getWorkflowById(
+    workflowId
+) {
     const pool = getPool();
 
     const [rows] = await pool.query(
@@ -64,6 +95,7 @@ export async function getWorkflowById(workflowId) {
             id,
             name,
             description,
+            can_create,
             stages,
             is_active,
             created_at,
@@ -83,11 +115,28 @@ export async function getWorkflowById(workflowId) {
 
     return {
         id: workflow.id,
-        name: workflow.name,
-        description: workflow.description,
-        stages: workflow.stages,
-        isActive: Boolean(workflow.is_active),
-        createdAt: workflow.created_at,
-        updatedAt: workflow.updated_at
+
+        name:
+            workflow.name,
+
+        description:
+            workflow.description,
+
+        canCreate:
+            workflow.can_create,
+
+        stages:
+            workflow.stages,
+
+        isActive:
+            Boolean(
+                workflow.is_active
+            ),
+
+        createdAt:
+            workflow.created_at,
+
+        updatedAt:
+            workflow.updated_at
     };
 }

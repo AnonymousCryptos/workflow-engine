@@ -145,6 +145,13 @@ function validateAssignedUsers(
         );
     }
 
+    if (
+        value.length === 1 &&
+        value[0] === "anyone"
+    ) {
+        return "anyone";
+    }
+
     const seen = new Set();
     const normalized = [];
 
@@ -618,6 +625,7 @@ export async function createWorkflowService(
         normalizedWorkflow.canCreate,
         "canCreate"
     );
+
     const workflowId =
         await createWorkflow(
             normalizedWorkflow

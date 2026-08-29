@@ -1,6 +1,7 @@
 import {
     getTableMetadata,
-    getAdminTableRows
+    getAdminTableRows,
+    createAdminRow
 } from "../database/admin.repository.js";
 
 import {
@@ -33,7 +34,11 @@ export async function getAdminTableMetadata(
         res.json({
             success: true,
             table,
-            columns
+            columns,
+            writableFields:
+                Object.keys(
+                    tableConfig.writableFields || {}
+                )
         });
     } catch (error) {
         console.error(error);
@@ -111,6 +116,46 @@ export async function getAdminTableData(
             success: false,
             message:
                 "Failed to load table data"
+        });
+    }
+}
+
+export async function createAdminTableRow(
+    req,
+    res
+) {
+    try {
+        const { table } =
+            req.params;
+
+        const tableConfig =
+            ADMIN_TABLES[table];
+
+        if (!tableConfig) {
+            return res.status(404).json({
+                success: false,
+                message:
+                    "Admin table not found"
+            });
+        }
+
+        const result =
+            await createAdminRow(
+                table,
+                req.body,
+                tableConfig
+            );
+
+        res.status(201).json({
+            success: true,
+            data: result
+        });
+    } catch (error) {
+        console.error(error);
+
+        res.status(400).json({
+            success: false,
+            message: error.message
         });
     }
 }

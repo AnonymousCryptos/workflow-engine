@@ -1,4 +1,5 @@
 import { getPool } from "../config/database.js";
+import bcrypt from "bcryptjs";
 
 export async function getTableMetadata(
     tableName,
@@ -168,5 +169,232 @@ export async function getAdminTableRows(
                     total / limit
                 )
         }
+    };
+}
+
+const FIELD_TRANSFORMS = {
+    hash: async (value) => {
+        if (
+            typeof value !== "string" ||
+            value.length === 0
+        ) {
+            throw new Error(
+                "Password must be a non-empty string"
+            );
+        }
+
+        return bcrypt.hash(
+            value,
+            10
+        );
+    }
+};
+
+export async function createAdminRow(
+    tableName,
+    data,
+    tableConfig = {}
+) {
+    const pool = getPool();
+
+    if (
+        !data ||
+        typeof data !== "object" ||
+        Array.isArray(data)
+    ) {
+        throw new Error(
+            "Request body must be an object"
+        );
+    }
+
+    const writableFields =
+        tableConfig.writableFields || {};
+
+    if (
+        Object.keys(writableFields).length === 0
+    ) {
+        throw new Error(
+            "No writable fields configured for this table"
+        );
+    }
+
+    const [columns] =
+        await pool.query(
+            `
+            SELECT
+                COLUMN_NAME AS name,
+                DATA_TYPE AS dataType,
+                IS_NULLABLE AS nullable,
+                COLUMN_DEFAULT AS defaultValue,
+                COLUMN_KEY AS columnKey,
+                EXTRA AS extra
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = ?
+            ORDER BY ORDINAL_POSITION
+            `,
+            [tableName]
+        );
+
+    if (columns.length === 0) {
+        throw new Error(
+            "Admin table not found"
+        );
+    }
+
+    const columnMap =
+        new Map(
+            columns.map(
+                (column) => [
+                    column.name,
+                    column
+                ]
+            )
+        );
+
+    const inputFields =
+        Object.keys(data);
+
+    if (inputFields.length === 0) {
+        throw new Error(
+            "At least one field is required"
+        );
+    }
+
+    const insertData = {};
+
+    for (
+        const fieldName of inputFields
+    ) {
+        const fieldConfig =
+            writableFields[fieldName];
+
+        if (!fieldConfig) {
+            throw new Error(
+                `${fieldName} cannot be set`
+            );
+        }
+
+        const columnName =
+            fieldConfig.column ||
+            fieldName;
+
+        if (
+            !columnMap.has(columnName)
+        ) {
+            throw new Error(
+                `Configured database field ${columnName} does not exist`
+            );
+        }
+
+        const column =
+            columnMap.get(columnName);
+
+        if (
+            tableConfig.immutableColumns?.includes(
+                columnName
+            )
+        ) {
+            throw new Error(
+                `${columnName} cannot be set`
+            );
+        }
+
+        let value =
+            data[fieldName];
+
+        if (
+            fieldConfig.transform
+        ) {
+            const transform =
+                FIELD_TRANSFORMS[
+                    fieldConfig.transform
+                ];
+
+            if (!transform) {
+                throw new Error(
+                    `Unsupported field transformation: ${fieldConfig.transform}`
+                );
+            }
+
+            value =
+                await transform(value);
+        }
+
+        if (
+            value === undefined
+        ) {
+            throw new Error(
+                `${fieldName} cannot be undefined`
+            );
+        }
+
+        insertData[columnName] =
+            value;
+    }
+
+    /*
+     * Validate required database
+     * columns that have no default.
+     */
+    for (
+        const column of columns
+    ) {
+        if (
+            column.extra.includes(
+                "auto_increment"
+            )
+        ) {
+            continue;
+        }
+
+        if (
+            column.nullable === "NO" &&
+            column.defaultValue === null &&
+            !Object.prototype.hasOwnProperty.call(
+                insertData,
+                column.name
+            )
+        ) {
+            throw new Error(
+                `${column.name} is required`
+            );
+        }
+    }
+
+    const insertColumns =
+        Object.keys(insertData);
+
+    const escapedColumns =
+        insertColumns
+            .map(
+                (column) =>
+                    `\`${column}\``
+            )
+            .join(", ");
+
+    const placeholders =
+        insertColumns
+            .map(() => "?")
+            .join(", ");
+
+    const values =
+        insertColumns.map(
+            (column) =>
+                insertData[column]
+        );
+
+    const [result] =
+        await pool.query(
+            `
+            INSERT INTO \`${tableName}\`
+            (${escapedColumns})
+            VALUES (${placeholders})
+            `,
+            values
+        );
+
+    return {
+        id: result.insertId
     };
 }

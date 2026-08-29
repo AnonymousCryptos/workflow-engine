@@ -7,7 +7,8 @@ import {
 
 import {
     getAdminTableMetadata,
-    getAdminTableData
+    getAdminTableData,
+    createAdminTableRow
 } from "../controllers/admin.controller.js";
 
 const router = express.Router();
@@ -24,6 +25,13 @@ router.get(
     authenticate,
     authorize("admin"),
     getAdminTableData
+);
+
+router.post(
+    "/tables/:table",
+    authenticate,
+    authorize("admin"),
+    createAdminTableRow
 );
 
 export default router;

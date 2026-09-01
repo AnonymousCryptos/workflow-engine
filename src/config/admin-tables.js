@@ -10,6 +10,16 @@ export const ADMIN_TABLES = {
             "updated_at"
         ],
 
+        uniqueFields: [
+            "email"
+        ],
+
+        requiredFields: [
+            "name",
+            "email",
+            "password"
+        ],
+
         writableFields: {
             name: {},
             email: {},
@@ -29,6 +39,14 @@ export const ADMIN_TABLES = {
             "id",
             "created_at",
             "updated_at"
+        ],
+
+        uniqueFields: [
+            "party_name"
+        ],
+
+        requiredFields: [
+            "party_name"
         ],
 
         writableFields: {

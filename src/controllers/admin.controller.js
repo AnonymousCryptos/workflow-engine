@@ -26,10 +26,10 @@ export async function getAdminTableMetadata(
         }
 
         const columns =
-        await getTableMetadata(
-            table,
-            tableConfig
-        );
+            await getTableMetadata(
+                table,
+                tableConfig
+            );
 
         res.json({
             success: true,
@@ -70,7 +70,9 @@ export async function getAdminTableData(
         }
 
         const {
-            search = ""
+            search = "",
+            sortBy = "id",
+            sortOrder = "desc"
         } = req.query;
 
         const page =
@@ -99,7 +101,9 @@ export async function getAdminTableData(
                 search,
                 page,
                 limit,
-                tableConfig
+                tableConfig,
+                sortBy,
+                sortOrder
             );
 
         res.json({
@@ -112,9 +116,10 @@ export async function getAdminTableData(
     } catch (error) {
         console.error(error);
 
-        res.status(500).json({
+        res.status(400).json({
             success: false,
             message:
+                error.message ||
                 "Failed to load table data"
         });
     }

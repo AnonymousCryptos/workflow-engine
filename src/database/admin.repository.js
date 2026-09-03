@@ -1,6 +1,15 @@
 import { getPool } from "../config/database.js";
 import bcrypt from "bcryptjs";
 
+const STRING_DATA_TYPES = [
+    "char",
+    "varchar",
+    "text",
+    "tinytext",
+    "mediumtext",
+    "longtext"
+];
+
 export async function getTableMetadata(
     tableName,
     tableConfig = {}
@@ -41,7 +50,9 @@ export async function getAdminTableRows(
     search = "",
     page = 1,
     limit = 20,
-    tableConfig = {}
+    tableConfig = {},
+    sortBy = "id",
+    sortOrder = "desc"
 ) {
     const pool = getPool();
 
@@ -92,17 +103,38 @@ export async function getAdminTableRows(
             )
             .join(", ");
 
+    /*
+     * Sorting is restricted to actual
+     * database columns.
+     *
+     * This prevents arbitrary SQL from
+     * being supplied through sortBy.
+     */
+    const sortableColumn =
+        columns.find(
+            (column) =>
+                column.name === sortBy
+        );
+
+    if (!sortableColumn) {
+        throw new Error(
+            "Invalid sort column"
+        );
+    }
+
+    const normalizedSortOrder =
+        String(sortOrder).toLowerCase() ===
+        "asc"
+            ? "ASC"
+            : "DESC";
+
+    const escapedSortColumn =
+        `\`${sortableColumn.name}\``;
+
     const searchableColumns =
         visibleColumns.filter(
             (column) =>
-                [
-                    "char",
-                    "varchar",
-                    "text",
-                    "tinytext",
-                    "mediumtext",
-                    "longtext"
-                ].includes(
+                STRING_DATA_TYPES.includes(
                     column.dataType
                 )
         );
@@ -150,7 +182,7 @@ export async function getAdminTableRows(
             SELECT ${escapedColumns}
             FROM \`${tableName}\`
             ${whereClause}
-            ORDER BY id DESC
+            ORDER BY ${escapedSortColumn} ${normalizedSortOrder}
             LIMIT ? OFFSET ?
             `,
             [
@@ -191,6 +223,28 @@ const FIELD_TRANSFORMS = {
         );
     }
 };
+
+function normalizeAdminFieldValue(
+    value,
+    column
+) {
+    if (
+        value === null ||
+        value === undefined
+    ) {
+        return value;
+    }
+
+    if (
+        STRING_DATA_TYPES.includes(
+            column.dataType
+        )
+    ) {
+        return String(value);
+    }
+
+    return value;
+}
 
 export async function createAdminRow(
     tableName,
@@ -355,6 +409,28 @@ export async function createAdminRow(
             continue;
         }
 
+        /*
+         * Normalize values according to the
+         * actual database datatype.
+         *
+         * Excel may provide a numeric value for
+         * a string column. For example:
+         *
+         *     12345678
+         *
+         * becomes:
+         *
+         *     "12345678"
+         *
+         * This is especially important for
+         * numeric-only passwords.
+         */
+        value =
+            normalizeAdminFieldValue(
+                value,
+                column
+            );
+
         if (
             fieldConfig.transform
         ) {
@@ -456,7 +532,6 @@ export async function createAdminRow(
      *
      * Optional null/undefined/empty values
      * must never be explicitly inserted.
-     * This allows database defaults to apply.
      */
     for (
         const columnName of
@@ -808,6 +883,17 @@ export async function validateAdminRows(
         }
 
         /*
+         * Create a normalized copy of the row.
+         *
+         * This is important because the normalized
+         * value must also be passed to the later
+         * insertion step.
+         */
+        const normalizedRow = {
+            ...row
+        };
+
+        /*
          * Validate every configured
          * writable field.
          */
@@ -825,7 +911,7 @@ export async function validateAdminRows(
             const column =
                 columnMap.get(columnName);
 
-            const value =
+            let value =
                 row[fieldName];
 
             const isMissing =
@@ -865,6 +951,27 @@ export async function validateAdminRows(
             if (isMissing) {
                 continue;
             }
+
+            /*
+             * Normalize according to the actual
+             * database datatype BEFORE validation.
+             *
+             * Example:
+             *
+             * Excel:
+             *     12345678
+             *
+             * MySQL VARCHAR:
+             *     "12345678"
+             */
+            value =
+                normalizeAdminFieldValue(
+                    value,
+                    column
+                );
+
+            normalizedRow[fieldName] =
+                value;
 
             /*
              * Validate datatype.
@@ -945,7 +1052,14 @@ export async function validateAdminRows(
 
         validatedRows.push({
             rowNumber: index + 2,
-            data: row,
+
+            /*
+             * Store normalized data so that when
+             * valid rows are inserted later, the
+             * same normalized values are used.
+             */
+            data: normalizedRow,
+
             valid: errors.length === 0,
             errors
         });
@@ -978,6 +1092,11 @@ function validateAdminFieldValue(
      * Password is validated as the
      * source value. Hashing happens only
      * during actual insertion.
+     *
+     * String normalization has already
+     * happened before this function, so a
+     * numeric-only Excel password is now
+     * a string.
      */
     if (
         fieldConfig.transform ===
@@ -1102,9 +1221,12 @@ function validateAdminFieldValue(
         case "tinytext":
         case "mediumtext":
         case "longtext":
+            /*
+             * String fields have already been
+             * normalized to strings.
+             */
             if (
-                typeof value === "string" ||
-                typeof value === "number"
+                typeof value === "string"
             ) {
                 return null;
             }
@@ -1134,7 +1256,7 @@ function formatFieldName(
     fieldName
 ) {
     return fieldName
-        .replace(/_/g, " ")
+        .replace(/\_/g, " ")
         .replace(
             /\b\w/g,
             (character) =>
@@ -1347,6 +1469,16 @@ async function createAdminRowWithConnection(
             continue;
         }
 
+        /*
+         * Normalize according to the database
+         * datatype before applying transforms.
+         */
+        value =
+            normalizeAdminFieldValue(
+                value,
+                column
+            );
+
         if (
             fieldConfig.transform
         ) {
@@ -1466,9 +1598,6 @@ async function createAdminRowWithConnection(
      *
      * Optional null/undefined/empty values
      * must never be explicitly inserted.
-     * This guarantees database defaults are
-     * used even if a future code path puts
-     * an empty value into insertData.
      */
     for (
         const columnName of

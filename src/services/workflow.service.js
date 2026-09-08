@@ -87,6 +87,57 @@ function validateFields(
             );
         }
 
+        /*
+         * Fields with fixed options must define
+         * options as a non-empty array.
+         *
+         * This is intentionally based on the
+         * field definition, not on any field key.
+         */
+        if (
+            Object.prototype.hasOwnProperty.call(
+                field,
+                "options"
+            )
+        ) {
+            if (
+                !Array.isArray(field.options) ||
+                field.options.length === 0
+            ) {
+                throw new Error(
+                    `Field "${field.key}" options must be a non-empty array`
+                );
+            }
+
+            const optionValues =
+                new Set();
+
+            for (const option of field.options) {
+                if (
+                    option === null ||
+                    option === undefined ||
+                    (
+                        typeof option !== "string" &&
+                        typeof option !== "number"
+                    )
+                ) {
+                    throw new Error(
+                        `Field "${field.key}" options must contain only strings or numbers`
+                    );
+                }
+
+                if (
+                    optionValues.has(option)
+                ) {
+                    throw new Error(
+                        `Field "${field.key}" options cannot contain duplicate values`
+                    );
+                }
+
+                optionValues.add(option);
+            }
+        }
+
         if (field.dataType === "array") {
             if (field.component !== "array") {
                 throw new Error(
@@ -121,6 +172,148 @@ function validateFields(
                 field.fields,
                 `fields of "${field.key}"`
             );
+        }
+    }
+}
+
+function validateStageData(
+    fields,
+    stageData,
+    scope = "stage data"
+) {
+    if (
+        !stageData ||
+        typeof stageData !== "object" ||
+        Array.isArray(stageData)
+    ) {
+        throw new Error(
+            `${scope} must be an object`
+        );
+    }
+
+    for (const field of fields) {
+        const hasValue =
+            Object.prototype.hasOwnProperty.call(
+                stageData,
+                field.key
+            );
+
+        /*
+         * Required validation.
+         *
+         * System-controlled fields have already
+         * been normalized before this function runs.
+         */
+        if (
+            field.required === true &&
+            (
+                !hasValue ||
+                stageData[field.key] === null ||
+                stageData[field.key] === undefined ||
+                stageData[field.key] === ""
+            )
+        ) {
+            throw new Error(
+                `Field "${field.label}" is required`
+            );
+        }
+
+        /*
+         * Nothing further to validate when the
+         * optional field has no value.
+         */
+        if (
+            !hasValue ||
+            stageData[field.key] === null ||
+            stageData[field.key] === undefined ||
+            stageData[field.key] === ""
+        ) {
+            continue;
+        }
+
+        const value =
+            stageData[field.key];
+
+        /*
+         * Fixed-value validation.
+         *
+         * The field definition is the source
+         * of truth. No field names are hardcoded.
+         */
+        if (
+            Array.isArray(field.options)
+        ) {
+            const isAllowed =
+                field.options.some(
+                    (option) =>
+                        option === value
+                );
+
+            if (!isAllowed) {
+                throw new Error(
+                    `Invalid value for field "${field.label}". Allowed values: ${field.options.join(", ")}`
+                );
+            }
+        }
+
+        /*
+         * Recursively validate array fields.
+         */
+        if (field.dataType === "array") {
+            if (!Array.isArray(value)) {
+                throw new Error(
+                    `Field "${field.label}" must be an array`
+                );
+            }
+
+            if (
+                field.required === true &&
+                value.length === 0
+            ) {
+                throw new Error(
+                    `Field "${field.label}" must contain at least one item`
+                );
+            }
+
+            /*
+            * assigned_users has a special valid
+            * representation: ["anyone"].
+            *
+            * It is handled separately by
+            * normalizeAssignedUsers().
+            */
+            if (
+                field.key === "assigned_users" &&
+                value.length === 1 &&
+                value[0] === "anyone"
+            ) {
+                continue;
+            }
+
+            for (
+                let index = 0;
+                index < value.length;
+                index++
+            ) {
+                const row =
+                    value[index];
+
+                if (
+                    !row ||
+                    typeof row !== "object" ||
+                    Array.isArray(row)
+                ) {
+                    throw new Error(
+                        `Item ${index + 1} of field "${field.label}" must be an object`
+                    );
+                }
+
+                validateStageData(
+                    field.fields || [],
+                    row,
+                    `${scope}.${field.key}[${index}]`
+                );
+            }
         }
     }
 }
@@ -728,6 +921,11 @@ export async function createWorkflowRunService({
             stageData
         );
 
+    validateStageData(
+        firstStage.fields || [],
+        normalizedStageData
+    );
+
     /*
      * Stage 1 assignment is for
      * the next stage.
@@ -976,6 +1174,11 @@ export async function submitWorkflowStageService({
                 currentStage.fields || [],
                 stageData
             );
+    
+    validateStageData(
+        currentStage.fields || [],
+        normalizedStageData
+    );
 
 
     const nextStage =
@@ -1205,7 +1408,9 @@ export async function getWorkflowStageHistoryService({
                     ...stage,
                     stageName:
                         workflowStage?.name ||
-                        `Stage ${stage.stageId}`
+                        `Stage ${stage.stageId}`,
+                    fields:
+                        workflowStage?.fields || []
                 };
             }
         );

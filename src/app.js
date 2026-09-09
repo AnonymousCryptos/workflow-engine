@@ -8,6 +8,7 @@ import masterRoutes from "./routes/master.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import { authenticate } from "./middleware/auth.middleware.js";
 import adminRoutes from "./routes/admin.routes.js";
+import reportRoutes from "./routes/report.routes.js";
 
 dotenv.config();
 
@@ -50,5 +51,11 @@ app.use("/api/v1/workflows", authenticate, workflowRoutes);
 
 app.use("/api/v1/masters", authenticate, masterRoutes);
 app.use("/api/v1/admin", adminRoutes);
+
+app.use(
+    "/api/v1/reports",
+    authenticate,
+    reportRoutes
+);
 
 export default app;

@@ -6,11 +6,18 @@ const MAX_LIMIT = Number(process.env.MASTER_MAX_LIMIT) || 100;
 export async function getMasterValues(req, res) {
     try {
         const { master } = req.params;
-        const { search = "" } = req.query;
+        const {
+            search = "",
+            godown_id: godownId
+        } = req.query;
 
-        const page = Math.max(Number(req.query.page) || 1, 1);
+        const page = Math.max(
+            Number(req.query.page) || 1,
+            1
+        );
 
-        const requestedLimit = Number(req.query.limit) || DEFAULT_LIMIT;
+        const requestedLimit =
+            Number(req.query.limit) || DEFAULT_LIMIT;
 
         const limit = Math.min(
             Math.max(requestedLimit, 1),
@@ -21,7 +28,10 @@ export async function getMasterValues(req, res) {
             master,
             search,
             page,
-            limit
+            limit,
+            {
+                godown_id: godownId
+            }
         );
 
         res.json({

@@ -38,6 +38,23 @@ export async function getAdminTableMetadata(
             writableFields:
                 Object.keys(
                     tableConfig.writableFields || {}
+                ),
+            lookupFields:
+                Object.fromEntries(
+                    Object.entries(
+                        tableConfig.writableFields || {}
+                    )
+                        .filter(
+                            ([, config]) =>
+                                config &&
+                                config.lookup
+                        )
+                        .map(
+                            ([field, config]) => [
+                                field,
+                                config.lookup
+                            ]
+                        )
                 )
         });
     } catch (error) {

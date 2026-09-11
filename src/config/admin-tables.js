@@ -53,5 +53,51 @@ export const ADMIN_TABLES = {
             party_name: {},
             is_active: {}
         }
+    },
+
+    godowns: {
+        hiddenColumns: [],
+
+        immutableColumns: [
+            "id",
+            "created_at",
+            "updated_at"
+        ],
+
+        uniqueFields: [
+            "name"
+        ],
+
+        requiredFields: [
+            "name"
+        ],
+
+        writableFields: {
+            name: {},
+            is_active: {}
+        }
+    },
+
+    racks: {
+        hiddenColumns: [],
+
+        immutableColumns: [
+            "id",
+            "created_at",
+            "updated_at"
+        ],
+
+        requiredFields: [
+            "godown_id",
+            "name"
+        ],
+
+        writableFields: {
+            godown_id: {
+                lookup: "godown"
+            },
+            name: {},
+            is_active: {}
+        }
     }
 };

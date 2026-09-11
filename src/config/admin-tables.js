@@ -87,6 +87,13 @@ export const ADMIN_TABLES = {
             "updated_at"
         ],
 
+        uniqueGroups: [
+            [
+                "godown_id",
+                "name"
+            ]
+        ],
+
         requiredFields: [
             "godown_id",
             "name"

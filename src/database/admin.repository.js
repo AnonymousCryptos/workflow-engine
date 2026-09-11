@@ -870,6 +870,60 @@ export async function validateAdminRows(
         );
 
     /*
+     * Configure composite unique groups.
+     */
+    const uniqueGroups =
+        tableConfig.uniqueGroups || [];
+
+    const uniqueGroupMappings =
+        uniqueGroups.map(
+            (group, groupIndex) => {
+                if (
+                    !Array.isArray(group) ||
+                    group.length === 0
+                ) {
+                    throw new Error(
+                        `Configured unique group ${groupIndex + 1} must contain at least one field`
+                    );
+                }
+
+                return group.map(
+                    (fieldName) => {
+                        const fieldConfig =
+                            writableFields[
+                                fieldName
+                            ];
+
+                        if (!fieldConfig) {
+                            throw new Error(
+                                `Configured unique group field ${fieldName} is not writable`
+                            );
+                        }
+
+                        const columnName =
+                            fieldConfig.column ||
+                            fieldName;
+
+                        if (
+                            !columnMap.has(
+                                columnName
+                            )
+                        ) {
+                            throw new Error(
+                                `Configured unique database field ${columnName} does not exist`
+                            );
+                        }
+
+                        return {
+                            fieldName,
+                            columnName
+                        };
+                    }
+                );
+            }
+        );
+
+    /*
      * Load existing unique values.
      */
     const existingUniqueValues =
@@ -905,6 +959,60 @@ export async function validateAdminRows(
     }
 
     /*
+     * Load existing composite unique
+     * combinations.
+     */
+    const existingUniqueGroups =
+        uniqueGroupMappings.map(
+            async (group) => {
+                const columnNames =
+                    group.map(
+                        (mapping) =>
+                            mapping.columnName
+                    );
+
+                const escapedColumns =
+                    columnNames
+                        .map(
+                            (columnName) =>
+                                `\`${columnName}\``
+                        )
+                        .join(", ");
+
+                const [existingRows] =
+                    await pool.query(
+                        `
+                        SELECT
+                            ${escapedColumns}
+                        FROM \`${tableName}\`
+                        `
+                    );
+
+                return new Set(
+                    existingRows.map(
+                        (row) =>
+                            createUniqueGroupKey(
+                                group.map(
+                                    (
+                                        mapping
+                                    ) =>
+                                        row[
+                                            mapping
+                                                .columnName
+                                        ]
+                                )
+                            )
+                    )
+                );
+            }
+        );
+
+    const existingUniqueGroupSets =
+        await Promise.all(
+            existingUniqueGroups
+        );
+
+    /*
      * Track unique values appearing
      * within this upload.
      */
@@ -920,6 +1028,15 @@ export async function validateAdminRows(
             new Set()
         );
     }
+
+    /*
+     * Track composite unique combinations
+     * appearing within this upload.
+     */
+    const uploadedUniqueGroups =
+        uniqueGroupMappings.map(
+            () => new Set()
+        );
 
     const validatedRows = [];
 
@@ -1028,14 +1145,6 @@ export async function validateAdminRows(
             /*
              * Normalize according to the actual
              * database datatype BEFORE validation.
-             *
-             * Example:
-             *
-             * Excel:
-             *     12345678
-             *
-             * MySQL VARCHAR:
-             *     "12345678"
              */
             value =
                 normalizeAdminFieldValue(
@@ -1048,10 +1157,6 @@ export async function validateAdminRows(
 
             /*
              * Validate lookup value.
-             *
-             * The lookup configuration determines
-             * which master table must contain the
-             * supplied value.
              */
             if (fieldConfig.lookup) {
                 const validLookupValues =
@@ -1095,7 +1200,7 @@ export async function validateAdminRows(
             }
 
             /*
-             * Validate uniqueness.
+             * Validate single-field uniqueness.
              */
             const uniqueSet =
                 existingUniqueValues.get(
@@ -1154,6 +1259,115 @@ export async function validateAdminRows(
             }
         }
 
+        /*
+         * Validate composite unique groups.
+         *
+         * This happens after all fields have been
+         * normalized so the exact values that will
+         * be inserted are compared.
+         */
+        for (
+            let groupIndex = 0;
+            groupIndex <
+            uniqueGroupMappings.length;
+            groupIndex++
+        ) {
+            const group =
+                uniqueGroupMappings[
+                    groupIndex
+                ];
+
+            const groupValues =
+                group.map(
+                    (mapping) =>
+                        normalizedRow[
+                            mapping.fieldName
+                        ]
+                );
+
+            /*
+             * A composite uniqueness check is only
+             * meaningful when all fields in the group
+             * have values.
+             */
+            const groupHasMissingValue =
+                groupValues.some(
+                    (value) =>
+                        value === null ||
+                        value === undefined ||
+                        value === ""
+                );
+
+            if (groupHasMissingValue) {
+                continue;
+            }
+
+            const groupKey =
+                createUniqueGroupKey(
+                    groupValues
+                );
+
+            if (
+                existingUniqueGroupSets[
+                    groupIndex
+                ].has(groupKey)
+            ) {
+                errors.push({
+                    field:
+                        group
+                            .map(
+                                (mapping) =>
+                                    mapping.fieldName
+                            )
+                            .join(", "),
+                    message:
+                        "This combination already exists.",
+                    suggestion:
+                        `Use a different combination of ${group
+                            .map(
+                                (mapping) =>
+                                    formatFieldName(
+                                        mapping.fieldName
+                                    )
+                                    .toLowerCase()
+                            )
+                            .join(" and ")}.`
+                });
+            }
+
+            if (
+                uploadedUniqueGroups[
+                    groupIndex
+                ].has(groupKey)
+            ) {
+                errors.push({
+                    field:
+                        group
+                            .map(
+                                (mapping) =>
+                                    mapping.fieldName
+                            )
+                            .join(", "),
+                    message:
+                        "This combination appears more than once in this upload.",
+                    suggestion:
+                        `Use a different combination of ${group
+                            .map(
+                                (mapping) =>
+                                    formatFieldName(
+                                        mapping.fieldName
+                                    )
+                                    .toLowerCase()
+                            )
+                            .join(" and ")}.`
+                });
+            }
+
+            uploadedUniqueGroups[
+                groupIndex
+            ].add(groupKey);
+        }
+
         validatedRows.push({
             rowNumber: index + 2,
 
@@ -1184,6 +1398,19 @@ export async function validateAdminRows(
         invalidRows,
         rows: validatedRows
     };
+}
+
+function createUniqueGroupKey(
+    values
+) {
+    return values
+        .map(
+            (value) =>
+                normalizeUniqueValue(
+                    value
+                )
+        )
+        .join("|");
 }
 
 function validateAdminFieldValue(

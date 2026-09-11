@@ -1,4 +1,5 @@
 import { getPool } from "../config/database.js";
+import { MASTER_CONFIG } from "../config/master-tables.js";
 import bcrypt from "bcryptjs";
 
 const STRING_DATA_TYPES = [
@@ -755,6 +756,78 @@ export async function validateAdminRows(
     }
 
     /*
+     * Load lookup values used by this table.
+     *
+     * Lookup validation is driven entirely
+     * by admin-tables.js and master-tables.js.
+     */
+    const lookupValues =
+        new Map();
+
+    const lookupFields =
+        writableFieldNames.filter(
+            (fieldName) =>
+                writableFields[fieldName]?.lookup
+        );
+
+    const lookupMasters =
+        [
+            ...new Set(
+                lookupFields.map(
+                    (fieldName) =>
+                        writableFields[
+                            fieldName
+                        ].lookup
+                )
+            )
+        ];
+
+    for (
+        const master of lookupMasters
+    ) {
+        const masterConfig =
+            MASTER_CONFIG[master];
+
+        if (!masterConfig) {
+            throw new Error(
+                `Unknown lookup master: ${master}`
+            );
+        }
+
+        /*
+         * If the master has an idField,
+         * validate against that ID.
+         * Otherwise validate against
+         * the configured valueField.
+         */
+        const lookupField =
+            masterConfig.idField ||
+            masterConfig.valueField;
+
+        const [lookupRows] =
+            await pool.query(
+                `
+                SELECT
+                    ${lookupField} AS value
+                FROM ${masterConfig.table}
+                WHERE is_active = 1
+                `
+            );
+
+        lookupValues.set(
+            master,
+            new Set(
+                lookupRows.map(
+                    (lookupRow) =>
+                        String(
+                            lookupRow.value
+                        ).trim()
+                )
+            )
+        );
+    }
+
+    /*
      * Configure business-level unique
      * fields.
      */
@@ -972,6 +1045,37 @@ export async function validateAdminRows(
 
             normalizedRow[fieldName] =
                 value;
+
+            /*
+             * Validate lookup value.
+             *
+             * The lookup configuration determines
+             * which master table must contain the
+             * supplied value.
+             */
+            if (fieldConfig.lookup) {
+                const validLookupValues =
+                    lookupValues.get(
+                        fieldConfig.lookup
+                    );
+
+                if (
+                    validLookupValues &&
+                    !validLookupValues.has(
+                        String(value).trim()
+                    )
+                ) {
+                    errors.push({
+                        field: fieldName,
+                        message:
+                            "Referenced value does not exist or is inactive.",
+                        suggestion:
+                            `Provide a valid active ${formatFieldName(
+                                fieldConfig.lookup
+                            ).toLowerCase()} value.`
+                    });
+                }
+            }
 
             /*
              * Validate datatype.

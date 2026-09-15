@@ -9,6 +9,7 @@ import authRoutes from "./routes/auth.routes.js";
 import { authenticate } from "./middleware/auth.middleware.js";
 import adminRoutes from "./routes/admin.routes.js";
 import reportRoutes from "./routes/report.routes.js";
+import stockRoutes from "./routes/stock.routes.js";
 
 dotenv.config();
 
@@ -56,6 +57,12 @@ app.use(
     "/api/v1/reports",
     authenticate,
     reportRoutes
+);
+
+app.use(
+    "/api/v1/stock",
+    authenticate,
+    stockRoutes
 );
 
 export default app;

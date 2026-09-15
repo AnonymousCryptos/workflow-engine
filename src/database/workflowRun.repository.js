@@ -9,7 +9,8 @@ export async function createWorkflowRun({
     stageData,
     remark,
     performedBy,
-    completed
+    completed,
+    executeTriggers
 }) {
     const pool = getPool();
 
@@ -51,6 +52,14 @@ export async function createWorkflowRun({
 
         const workflowRunId =
             runResult.insertId;
+
+        if (
+            executeTriggers
+        ) {
+            await executeTriggers(
+                connection
+            );
+        }
 
         await connection.query(
             `
@@ -95,7 +104,8 @@ export async function submitWorkflowStage({
     stageData,
     remark,
     performedBy,
-    completed
+    completed,
+    executeTriggers
 }) {
     const pool = getPool();
 
@@ -139,6 +149,14 @@ export async function submitWorkflowStage({
         ) {
             throw new Error(
                 "Submitted stage is not the current stage"
+            );
+        }
+
+        if (
+            executeTriggers
+        ) {
+            await executeTriggers(
+                connection
             );
         }
 

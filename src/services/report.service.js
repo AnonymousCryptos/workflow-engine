@@ -1,7 +1,8 @@
 import XLSX from "xlsx";
 
 import {
-    getCompletedRunsForReport
+    getCompletedRunsForReport,
+    getCurrentStockForReport
 } from "../database/report.repository.js";
 
 import {
@@ -408,5 +409,253 @@ export async function generateInOutReportService({
         buffer,
         filename:
             `in-out-report_${startDate}_to_${endDate}.xlsx`
+    };
+}
+
+export async function generateStockReportService() {
+    const stockRows =
+        await getCurrentStockForReport();
+
+    if (stockRows.length === 0) {
+        throw new Error(
+            "No stock records found."
+        );
+    }
+
+    const totalQuantity =
+        stockRows.reduce(
+            (total, row) =>
+                total +
+                Number(row.quantity),
+            0
+        );
+
+    const skuTotals = new Map();
+
+    const godownTotals = new Map();
+
+    const locationTotals = new Map();
+
+    for (const row of stockRows) {
+        const quantity =
+            Number(row.quantity);
+
+        const sku =
+            String(row.sku);
+
+        const godown =
+            String(row.godown);
+
+        const locationKey =
+            `${godown} - ${String(row.rack)}`;
+
+        skuTotals.set(
+            sku,
+            (skuTotals.get(sku) || 0) +
+                quantity
+        );
+
+        godownTotals.set(
+            godown,
+            (godownTotals.get(godown) || 0) +
+                quantity
+        );
+
+        locationTotals.set(
+            locationKey,
+            (locationTotals.get(
+                locationKey
+            ) || 0) + quantity
+        );
+    }
+
+    const summaryRows = [
+        {
+            Metric: "Total SKUs",
+            Value: skuTotals.size
+        },
+        {
+            Metric: "Total Stock Quantity",
+            Value: totalQuantity
+        },
+        {
+            Metric: "Total Godowns",
+            Value: godownTotals.size
+        },
+        {
+            Metric: "Total Locations",
+            Value: locationTotals.size
+        }
+    ];
+
+    const skuRows =
+        Array.from(
+            skuTotals.entries()
+        ).map(
+            ([sku, quantity]) => ({
+                "SKU": sku,
+                "Total Quantity":
+                    quantity
+            })
+        );
+
+    const godownRows =
+        Array.from(
+            godownTotals.entries()
+        ).map(
+            ([godown, quantity]) => ({
+                "Godown": godown,
+                "Total Quantity":
+                    quantity
+            })
+        );
+
+    const locationRows =
+        Array.from(
+            locationTotals.entries()
+        ).map(
+            ([location, quantity]) => ({
+                "Location": location,
+                "Total Quantity":
+                    quantity
+            })
+        );
+
+    const detailRows =
+        stockRows.map(
+            (row) => ({
+                "SKU":
+                    row.sku,
+                "Godown":
+                    row.godown,
+                "Rack":
+                    row.rack,
+                "Quantity":
+                    Number(row.quantity)
+            })
+        );
+
+    const workbook =
+        XLSX.utils.book_new();
+
+    const summarySheet =
+        XLSX.utils.json_to_sheet(
+            summaryRows
+        );
+
+    const skuSheet =
+        XLSX.utils.json_to_sheet(
+            skuRows
+        );
+
+    const godownSheet =
+        XLSX.utils.json_to_sheet(
+            godownRows
+        );
+
+    const locationSheet =
+        XLSX.utils.json_to_sheet(
+            locationRows
+        );
+
+    const detailSheet =
+        XLSX.utils.json_to_sheet(
+            detailRows
+        );
+
+    summarySheet["!cols"] = [
+        {
+            wch: 25
+        },
+        {
+            wch: 20
+        }
+    ];
+
+    skuSheet["!cols"] = [
+        {
+            wch: 25
+        },
+        {
+            wch: 20
+        }
+    ];
+
+    godownSheet["!cols"] = [
+        {
+            wch: 25
+        },
+        {
+            wch: 20
+        }
+    ];
+
+    locationSheet["!cols"] = [
+        {
+            wch: 35
+        },
+        {
+            wch: 20
+        }
+    ];
+
+    detailSheet["!cols"] = [
+        {
+            wch: 25
+        },
+        {
+            wch: 25
+        },
+        {
+            wch: 25
+        },
+        {
+            wch: 20
+        }
+    ];
+
+    XLSX.utils.book_append_sheet(
+        workbook,
+        summarySheet,
+        "Summary"
+    );
+
+    XLSX.utils.book_append_sheet(
+        workbook,
+        skuSheet,
+        "By SKU"
+    );
+
+    XLSX.utils.book_append_sheet(
+        workbook,
+        godownSheet,
+        "By Godown"
+    );
+
+    XLSX.utils.book_append_sheet(
+        workbook,
+        locationSheet,
+        "By Location"
+    );
+
+    XLSX.utils.book_append_sheet(
+        workbook,
+        detailSheet,
+        "Stock Details"
+    );
+
+    const buffer =
+        XLSX.write(
+            workbook,
+            {
+                type: "buffer",
+                bookType: "xlsx"
+            }
+        );
+
+    return {
+        buffer,
+        filename:
+            `stock-report.xlsx`
     };
 }

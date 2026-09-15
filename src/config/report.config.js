@@ -33,5 +33,11 @@ export const REPORT_CONFIG = {
                 }
             }
         }
+    },
+
+    stock: {
+        name: "Stock Report",
+        description:
+        "This report contains the current stock available across all godowns and racks."
     }
 };

@@ -15,6 +15,10 @@ import {
 } from "../database/workflowRun.repository.js";
 
 import {
+    executeStageTriggers
+} from "./workflowTrigger.service.js";
+
+import {
     generateWorkflowPdf
 } from "../services/workflowPdf.service.js";
 
@@ -400,6 +404,136 @@ function validateCanCreate(
     );
 }
 
+function validateStageTriggers(
+    triggers,
+    stageName,
+    fields = []
+) {
+    if (triggers === undefined) {
+        return;
+    }
+
+    if (!Array.isArray(triggers)) {
+        throw new Error(
+            `Stage "${stageName}" triggers must be an array`
+        );
+    }
+
+    for (const trigger of triggers) {
+        if (
+            !trigger ||
+            typeof trigger !== "object" ||
+            Array.isArray(trigger)
+        ) {
+            throw new Error(
+                `Invalid trigger definition in stage "${stageName}"`
+            );
+        }
+
+        if (
+            typeof trigger.type !== "string" ||
+            trigger.type.trim() === ""
+        ) {
+            throw new Error(
+                `Every trigger in stage "${stageName}" must have a type`
+            );
+        }
+
+        if (
+            trigger.type === "stock_movement"
+        ) {
+            if (
+                typeof trigger.itemsField !== "string" ||
+                trigger.itemsField.trim() === ""
+            ) {
+                throw new Error(
+                    `Stock movement trigger in stage "${stageName}" must have an itemsField`
+                );
+            }
+
+            const itemsFieldExists =
+                Array.isArray(fields) &&
+                fields.some(
+                    (field) =>
+                        field &&
+                        field.key ===
+                            trigger.itemsField
+                );
+
+            if (!itemsFieldExists) {
+                throw new Error(
+                    `Stock movement trigger in stage "${stageName}" references unknown itemsField "${trigger.itemsField}"`
+                );
+            }
+
+            const hasMovementField =
+                Object.prototype.hasOwnProperty.call(
+                    trigger,
+                    "movementField"
+                );
+
+            const hasMovementValue =
+                Object.prototype.hasOwnProperty.call(
+                    trigger,
+                    "movementValue"
+                );
+
+            if (
+                hasMovementField ===
+                hasMovementValue
+            ) {
+                throw new Error(
+                    `Stock movement trigger in stage "${stageName}" must define exactly one of movementField or movementValue`
+                );
+            }
+
+            if (hasMovementField) {
+                if (
+                    typeof trigger.movementField !==
+                        "string" ||
+                    trigger.movementField.trim() === ""
+                ) {
+                    throw new Error(
+                        `Stock movement trigger in stage "${stageName}" must have a valid movementField`
+                    );
+                }
+
+                const movementFieldExists =
+                    Array.isArray(fields) &&
+                    fields.some(
+                        (field) =>
+                            field &&
+                            field.key ===
+                                trigger.movementField
+                    );
+
+                if (!movementFieldExists) {
+                    throw new Error(
+                        `Stock movement trigger in stage "${stageName}" references unknown movementField "${trigger.movementField}"`
+                    );
+                }
+            }
+
+            if (hasMovementValue) {
+                if (
+                    trigger.movementValue !== "In" &&
+                    trigger.movementValue !== "Out"
+                ) {
+                    throw new Error(
+                        `Stock movement trigger in stage "${stageName}" must have movementValue "In" or "Out"`
+                    );
+                }
+            }
+
+            continue;
+        }
+
+        throw new Error(
+            `Unsupported trigger type "${trigger.type}" in stage "${stageName}"`
+        );
+    }
+}
+
 function validateWorkflow(
     workflow
 ) {
@@ -507,6 +641,12 @@ function validateWorkflow(
         validateFields(
             stage.fields,
             `fields of stage "${stage.name}"`
+        );
+
+        validateStageTriggers(
+            stage.triggers,
+            stage.name,
+            stage.fields
         );
 
         /*
@@ -985,7 +1125,16 @@ export async function createWorkflowRunService({
             performedBy:
                 normalizedUserId,
             completed:
-                isCompleted
+                isCompleted,
+            executeTriggers:
+                (connection) =>
+                    executeStageTriggers({
+                        triggers:
+                            firstStage.triggers,
+                        stageData:
+                            normalizedStageData,
+                        connection
+                    })
         });
 
     return {
@@ -1233,7 +1382,16 @@ export async function submitWorkflowStageService({
         performedBy:
             normalizedUserId,
         completed:
-            isCompleted
+            isCompleted,
+        executeTriggers:
+            (connection) =>
+                executeStageTriggers({
+                    triggers:
+                        currentStage.triggers,
+                    stageData:
+                        normalizedStageData,
+                    connection
+                })
     });
 
     return {

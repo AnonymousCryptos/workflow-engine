@@ -74,3 +74,36 @@ export async function getCompletedRunsForReport({
 
     return rows;
 }
+
+export async function getCurrentStockForReport() {
+    const pool = getPool();
+
+    const [rows] = await pool.query(
+        `
+        SELECT
+            s.sku,
+            s.godown_id,
+            g.name AS godown,
+            s.rack_id,
+            r.name AS rack,
+            s.quantity
+        FROM stock s
+
+        INNER JOIN godowns g
+            ON g.id = s.godown_id
+
+        INNER JOIN racks r
+            ON r.id = s.rack_id
+
+        WHERE s.quantity > 0
+
+        ORDER BY
+            s.quantity DESC,
+            s.sku ASC,
+            g.name ASC,
+            r.name ASC
+        `
+    );
+
+    return rows;
+}

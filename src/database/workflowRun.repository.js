@@ -267,7 +267,8 @@ export async function getWorkflowRunById(
 }
 
 export async function getWorkflowRunForPdf(
-    workflowRunId
+    workflowRunId,
+    stageId
 ) {
     const pool = getPool();
 
@@ -280,16 +281,21 @@ export async function getWorkflowRunForPdf(
                 wr.workflow_id,
                 wr.status,
                 wr.created_at,
+                wsh.stage_id,
                 wsh.stage_data
             FROM workflow_runs wr
             INNER JOIN workflow_stage_history wsh
                 ON wsh.workflow_run_id =
                    wr.id
             WHERE wr.id = ?
+              AND wsh.stage_id = ?
             ORDER BY wsh.id ASC
             LIMIT 1
             `,
-            [workflowRunId]
+            [
+                workflowRunId,
+                stageId
+            ]
         );
 
     if (rows.length === 0) {
@@ -306,6 +312,8 @@ export async function getWorkflowRunForPdf(
             rows[0].status,
         createdAt:
             rows[0].created_at,
+        stageId:
+            rows[0].stage_id,
         stageData:
             rows[0].stage_data
     };

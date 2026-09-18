@@ -240,8 +240,39 @@ export async function downloadWorkflowPdf(
         const { id } =
             req.params;
 
+        const { stage_id } =
+            req.query;
+
+        if (
+            stage_id === undefined ||
+            stage_id === ""
+        ) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "stage_id is required"
+            });
+        }
+
+        const stageId =
+            Number(stage_id);
+
+        if (
+            !Number.isInteger(stageId) ||
+            stageId < 1
+        ) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "stage_id must be a positive integer"
+            });
+        }
+
         const pdf =
-            await generateWorkflowPdf(id);
+            await generateWorkflowPdf(
+                id,
+                stageId
+            );
 
         res.setHeader(
             "Content-Type",
@@ -250,7 +281,7 @@ export async function downloadWorkflowPdf(
 
         res.setHeader(
             "Content-Disposition",
-            `attachment; filename="workflow-${id}.pdf"`
+            `attachment; filename="workflow-${id}-stage-${stageId}.pdf"`
         );
 
         res.send(pdf);

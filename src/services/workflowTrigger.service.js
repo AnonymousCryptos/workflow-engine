@@ -1,6 +1,7 @@
 import {
-    applyStockMovement
+    applyStockMovements
 } from "./stock.service.js";
+
 
 async function executeStockMovementTrigger({
     trigger,
@@ -52,29 +53,46 @@ async function executeStockMovementTrigger({
         );
     }
 
-    for (const item of items) {
-        if (
-            !item ||
-            typeof item !== "object" ||
-            Array.isArray(item)
-        ) {
-            throw new Error(
-                `Invalid item in stock movement field "${itemsField}"`
-            );
-        }
-
-        await applyStockMovement({
-            sku: item.sku,
-            godownId:
-                item.godown,
-            rackId:
-                item.rack,
-            quantity:
-                item.quantity,
-            movementType,
-            connection
-        });
+    /*
+     * Preserve the existing behavior:
+     * an empty array simply results in
+     * no stock movement.
+     */
+    if (items.length === 0) {
+        return;
     }
+
+    const movements =
+        items.map(
+            (item) => {
+                if (
+                    !item ||
+                    typeof item !== "object" ||
+                    Array.isArray(item)
+                ) {
+                    throw new Error(
+                        `Invalid item in stock movement field "${itemsField}"`
+                    );
+                }
+
+                return {
+                    sku:
+                        item.sku,
+                    godownId:
+                        item.godown,
+                    rackId:
+                        item.rack,
+                    quantity:
+                        item.quantity,
+                    movementType
+                };
+            }
+        );
+
+    await applyStockMovements({
+        movements,
+        connection
+    });
 }
 
 

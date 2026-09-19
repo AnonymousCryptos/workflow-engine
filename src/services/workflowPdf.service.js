@@ -115,15 +115,7 @@ function getFieldColumns(
 /*
  * Resolve all lookup labels in batches.
  *
- * Previously this executed one MySQL query for every
- * lookup value found in the stage data.
- *
- * Example:
- * 500 rows x godown/rack/sku lookups
- * could result in hundreds or thousands of queries.
- *
- * This version performs one query per lookup master
- * and stores the results in a Map.
+ * One query is performed per lookup master.
  */
 async function resolveLookupLabels(
     fields,
@@ -240,51 +232,79 @@ async function resolveLookupLabels(
         }
     };
 
+    /*
+     * Lookup masters are independent, so
+     * resolve them concurrently.
+     */
+    const lookupPromises =
+        Array.from(
+            lookupRequests.entries()
+        ).map(
+            async ([
+                master,
+                valuesMap
+            ]) => {
+                const config =
+                    masterConfig[master];
+
+                if (!config) {
+                    return [];
+                }
+
+                const values =
+                    Array.from(
+                        valuesMap.values()
+                    );
+
+                if (
+                    values.length === 0
+                ) {
+                    return [];
+                }
+
+                const placeholders =
+                    values
+                        .map(
+                            () => "?"
+                        )
+                        .join(", ");
+
+                const [rows] =
+                    await pool.query(
+                        `
+                        SELECT
+                            ${config.valueColumn} AS value,
+                            ${config.labelColumn} AS label
+                        FROM ${config.table}
+                        WHERE ${config.valueColumn}
+                            IN (${placeholders})
+                        `,
+                        values
+                    );
+
+                return rows.map(
+                    (row) => ({
+                        master,
+                        value:
+                            row.value,
+                        label:
+                            row.label
+                    })
+                );
+            }
+        );
+
+    const lookupResults =
+        await Promise.all(
+            lookupPromises
+        );
+
     for (
-        const [
-            master,
-            valuesMap
-        ] of lookupRequests
+        const rows of lookupResults
     ) {
-        const config =
-            masterConfig[master];
-
-        if (!config) {
-            continue;
-        }
-
-        const values =
-            Array.from(
-                valuesMap.values()
-            );
-
-        if (values.length === 0) {
-            continue;
-        }
-
-        const placeholders =
-            values
-                .map(
-                    () => "?"
-                )
-                .join(", ");
-
-        const [rows] =
-            await pool.query(
-                `
-                SELECT
-                    ${config.valueColumn} AS value,
-                    ${config.labelColumn} AS label
-                FROM ${config.table}
-                WHERE ${config.valueColumn}
-                    IN (${placeholders})
-                `,
-                values
-            );
-
         for (const row of rows) {
             resolved.set(
-                `${master}:${String(row.value)}`,
+                `${row.master}:${String(row.value)}`,
                 row.label
             );
         }
@@ -391,10 +411,11 @@ async function collectSkuNames(
 
 
 /*
- * Fetch unique SKU images with limited concurrency.
+ * Fetch unique SKU images concurrently
+ * with a bounded concurrency limit.
  *
- * This prevents the same image from being downloaded
- * repeatedly when a SKU appears in many rows.
+ * Images are still fetched only once
+ * per unique SKU.
  */
 async function buildSkuImageMap(
     skuMap
@@ -422,22 +443,21 @@ async function buildSkuImageMap(
     }
 
     /*
-     * Fetch at most 10 images concurrently.
-     * This is much faster than downloading every
-     * image sequentially while avoiding an excessive
-     * number of simultaneous HTTP requests.
+     * Run more image requests concurrently
+     * than before, while still keeping the
+     * number bounded.
      */
-    const BATCH_SIZE = 10;
+    const CONCURRENCY = 20;
 
     for (
         let start = 0;
         start < imageRequests.length;
-        start += BATCH_SIZE
+        start += CONCURRENCY
     ) {
         const batch =
             imageRequests.slice(
                 start,
-                start + BATCH_SIZE
+                start + CONCURRENCY
             );
 
         const results =
@@ -639,11 +659,6 @@ function drawInfoSection(
         height +
         20;
 
-    /*
-     * Reference ID and creation time
-     * are workflow-run metadata, not
-     * stage fields.
-     */
     const metadataY =
         document.y;
 
@@ -784,10 +799,6 @@ async function drawArrayTable(
         document.page.margins.left -
         document.page.margins.right;
 
-    /*
-     * Add a separate IMAGE column immediately
-     * after SKU when the array contains a SKU.
-     */
     const skuColumnIndex =
         columns.findIndex(
             (column) =>
@@ -813,13 +824,6 @@ async function drawArrayTable(
         );
     }
 
-    /*
-     * Column widths.
-     *
-     * SKU and IMAGE receive dedicated space.
-     * Numeric fields remain compact.
-     * Godown/Rack get enough room for names.
-     */
     const fixedWidths =
         tableColumns.map(
             (column) => {
@@ -903,10 +907,6 @@ async function drawArrayTable(
             0
         );
 
-    /*
-     * Scale down if necessary so the complete
-     * table always stays inside the page.
-     */
     const scale =
         actualTotal > tableWidth
             ? tableWidth /
@@ -917,6 +917,13 @@ async function drawArrayTable(
         widths.map(
             (width) =>
                 width * scale
+        );
+
+    const finalTableWidth =
+        finalWidths.reduce(
+            (sum, width) =>
+                sum + width,
+            0
         );
 
     const rowHeight = 60;
@@ -947,6 +954,46 @@ async function drawArrayTable(
 
     drawHeader();
 
+    /*
+     * Draw table column separators for
+     * each page rather than drawing a
+     * complete rectangle around every cell.
+     */
+    function drawColumnSeparators(
+        startY,
+        endY
+    ) {
+        let currentX =
+            tableX;
+
+        document
+            .lineWidth(0.5)
+            .strokeColor("#d0d5dd");
+
+        for (
+            let index = 0;
+            index <
+            finalWidths.length - 1;
+            index++
+        ) {
+            currentX +=
+                finalWidths[index];
+
+            document
+                .moveTo(
+                    currentX,
+                    startY
+                )
+                .lineTo(
+                    currentX,
+                    endY
+                )
+                .stroke();
+        }
+    }
+
+    let pageRowsStartY = y;
+
     for (
         let rowIndex = 0;
         rowIndex < rows.length;
@@ -960,6 +1007,15 @@ async function drawArrayTable(
             document.page.height -
                 document.page.margins.bottom
         ) {
+            /*
+             * Finish the vertical separators
+             * on the previous page.
+             */
+            drawColumnSeparators(
+                pageRowsStartY,
+                y
+            );
+
             document.addPage();
 
             y =
@@ -975,22 +1031,27 @@ async function drawArrayTable(
                 document.y;
 
             drawHeader();
+
+            pageRowsStartY = y;
         }
 
+        /*
+         * Alternate row shades.
+         *
+         * The darker shade is deliberately
+         * visible enough to distinguish rows
+         * while remaining print-friendly.
+         */
         const background =
             rowIndex % 2 === 0
                 ? "#ffffff"
-                : "#f9fafb";
+                : "#f2f4f7";
 
         document
             .rect(
                 tableX,
                 y,
-                finalWidths.reduce(
-                    (sum, width) =>
-                        sum + width,
-                    0
-                ),
+                finalTableWidth,
                 rowHeight
             )
             .fillColor(background)
@@ -1015,24 +1076,6 @@ async function drawArrayTable(
                     columnIndex
                 ];
 
-            document
-                .rect(
-                    currentX,
-                    y,
-                    width,
-                    rowHeight
-                )
-                .lineWidth(0.6)
-                .strokeColor("#d0d5dd")
-                .stroke();
-
-            /*
-             * IMAGE column.
-             *
-             * Image data was already fetched before
-             * PDF rendering started. No network request
-             * happens inside this row loop anymore.
-             */
             if (
                 column.key ===
                 "__sku_image"
@@ -1046,21 +1089,49 @@ async function drawArrayTable(
                     );
 
                 if (imageBuffer) {
+                    const imageX =
+                        currentX + 7;
+
+                    const imageY =
+                        y + 7;
+
+                    const imageWidth =
+                        width - 14;
+
+                    const imageHeight =
+                        rowHeight - 14;
+
                     document.image(
                         imageBuffer,
-                        currentX + 7,
-                        y + 7,
+                        imageX,
+                        imageY,
                         {
                             fit: [
-                                width - 14,
-                                rowHeight - 14
+                                imageWidth,
+                                imageHeight
                             ],
                             align: "center",
                             valign: "center"
                         }
                     );
+
+                    const imageUrl =
+                        skuMap?.get(
+                            String(skuValue)
+                        )?.image_url;
+
+                    if (imageUrl) {
+                        document.link(
+                            imageX,
+                            imageY,
+                            imageWidth,
+                            imageHeight,
+                            imageUrl
+                        );
+                    }
                 }
-            } else {
+            }
+            else {
                 const value =
                     row[
                         column.key
@@ -1094,8 +1165,36 @@ async function drawArrayTable(
                 width;
         }
 
+        /*
+         * Only one horizontal border per row.
+         * The vertical borders are drawn once
+         * for the page after its rows are rendered.
+         */
+        document
+            .moveTo(
+                tableX,
+                y + rowHeight
+            )
+            .lineTo(
+                tableX +
+                    finalTableWidth,
+                y + rowHeight
+            )
+            .lineWidth(0.5)
+            .strokeColor("#d0d5dd")
+            .stroke();
+
         y += rowHeight;
     }
+
+    /*
+     * Draw the remaining vertical
+     * separators for the final page.
+     */
+    drawColumnSeparators(
+        pageRowsStartY,
+        y
+    );
 
     document.y =
         y + 20;
@@ -1198,18 +1297,12 @@ export async function generateWorkflowPdf(
         );
     }
 
-    /*
-     * Resolve all lookup labels with batched DB queries.
-     */
     const lookupLabels =
         await resolveLookupLabels(
             stage.fields || [],
             stageData
         );
 
-    /*
-     * Collect unique SKUs first.
-     */
     const skuNames =
         await collectSkuNames(
             stage.fields || [],
@@ -1236,12 +1329,6 @@ export async function generateWorkflowPdf(
             );
     }
 
-    /*
-     * Fetch every unique SKU image once.
-     *
-     * This happens before PDF rendering so the
-     * rendering loop contains no network requests.
-     */
     const skuImageMap =
         await buildSkuImageMap(
             skuMap
@@ -1283,23 +1370,11 @@ export async function generateWorkflowPdf(
             }
         );
 
-    /*
-     * ------------------------------------------------
-     * HEADER
-     * ------------------------------------------------
-     */
-
     drawPageHeader(
         document,
         stage.name,
         workflow.name
     );
-
-    /*
-     * ------------------------------------------------
-     * INFORMATION
-     * ------------------------------------------------
-     */
 
     drawInfoSection(
         document,
@@ -1308,12 +1383,6 @@ export async function generateWorkflowPdf(
         stageData,
         lookupLabels
     );
-
-    /*
-     * ------------------------------------------------
-     * ARRAY FIELDS
-     * ------------------------------------------------
-     */
 
     const arrayFields =
         (stage.fields || []).filter(
@@ -1337,12 +1406,6 @@ export async function generateWorkflowPdf(
             skuImageMap
         );
     }
-
-    /*
-     * ------------------------------------------------
-     * FOOTER
-     * ------------------------------------------------
-     */
 
     const footerY =
         document.page.height -

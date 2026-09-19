@@ -46,6 +46,375 @@ export async function getStockRow({
         : null;
 }
 
+
+/*
+ * Returns active SKU records for
+ * batch stock validation.
+ */
+export async function getActiveSkus({
+    skus,
+    connection
+}) {
+    if (
+        !Array.isArray(skus) ||
+        skus.length === 0
+    ) {
+        return [];
+    }
+
+    if (!connection) {
+        throw new Error(
+            "Database connection is required"
+        );
+    }
+
+    const [rows] =
+        await connection.query(
+            `
+            SELECT
+                sku_name
+            FROM sku_details
+            WHERE sku_name IN (?)
+              AND is_active = TRUE
+            `,
+            [skus]
+        );
+
+    return rows;
+}
+
+
+/*
+ * Returns active Godown records for
+ * batch stock validation.
+ */
+export async function getActiveGodowns({
+    godownIds,
+    connection
+}) {
+    if (
+        !Array.isArray(godownIds) ||
+        godownIds.length === 0
+    ) {
+        return [];
+    }
+
+    if (!connection) {
+        throw new Error(
+            "Database connection is required"
+        );
+    }
+
+    const [rows] =
+        await connection.query(
+            `
+            SELECT
+                id
+            FROM godowns
+            WHERE id IN (?)
+              AND is_active = TRUE
+            `,
+            [godownIds]
+        );
+
+    return rows;
+}
+
+
+/*
+ * Returns active Rack records for
+ * batch stock validation.
+ */
+export async function getActiveRacks({
+    rackIds,
+    connection
+}) {
+    if (
+        !Array.isArray(rackIds) ||
+        rackIds.length === 0
+    ) {
+        return [];
+    }
+
+    if (!connection) {
+        throw new Error(
+            "Database connection is required"
+        );
+    }
+
+    const [rows] =
+        await connection.query(
+            `
+            SELECT
+                id,
+                godown_id
+            FROM racks
+            WHERE id IN (?)
+              AND is_active = TRUE
+            `,
+            [rackIds]
+        );
+
+    return rows;
+}
+
+
+/*
+ * Finds and locks all existing stock
+ * rows affected by a batch movement.
+ *
+ * Each movement must contain:
+ *   sku
+ *   godownId
+ *   rackId
+ */
+export async function getStockRowsForMovements({
+    movements,
+    connection
+}) {
+    if (
+        !Array.isArray(movements) ||
+        movements.length === 0
+    ) {
+        return [];
+    }
+
+    if (!connection) {
+        throw new Error(
+            "Database connection is required"
+        );
+    }
+
+    const uniqueKeys =
+        new Map();
+
+    movements.forEach(
+        (movement) => {
+            const key =
+                `${movement.sku}\u0000${movement.godownId}\u0000${movement.rackId}`;
+
+            if (!uniqueKeys.has(key)) {
+                uniqueKeys.set(
+                    key,
+                    movement
+                );
+            }
+        }
+    );
+
+    const keys =
+        Array.from(
+            uniqueKeys.values()
+        );
+
+    const tuplePlaceholders =
+        keys
+            .map(
+                () =>
+                    "(?, ?, ?)"
+            )
+            .join(", ");
+
+    const params = [];
+
+    keys.forEach(
+        (movement) => {
+            params.push(
+                movement.sku,
+                movement.godownId,
+                movement.rackId
+            );
+        }
+    );
+
+    const [rows] =
+        await connection.query(
+            `
+            SELECT
+                id,
+                sku,
+                godown_id,
+                rack_id,
+                quantity
+            FROM stock
+            WHERE (
+                sku,
+                godown_id,
+                rack_id
+            ) IN (${tuplePlaceholders})
+            FOR UPDATE
+            `,
+            params
+        );
+
+    return rows;
+}
+
+
+/*
+ * Inserts multiple new stock rows.
+ */
+export async function insertStockBatch({
+    rows,
+    connection
+}) {
+    if (
+        !Array.isArray(rows) ||
+        rows.length === 0
+    ) {
+        return;
+    }
+
+    if (!connection) {
+        throw new Error(
+            "Database connection is required for stock mutations"
+        );
+    }
+
+    /*
+     * Keep batches reasonably small so
+     * very large uploads do not create
+     * unnecessarily large SQL statements.
+     */
+    const BATCH_SIZE = 500;
+
+    for (
+        let start = 0;
+        start < rows.length;
+        start += BATCH_SIZE
+    ) {
+        const batch =
+            rows.slice(
+                start,
+                start + BATCH_SIZE
+            );
+
+        const placeholders =
+            batch
+                .map(
+                    () =>
+                        "(?, ?, ?, ?)"
+                )
+                .join(", ");
+
+        const params = [];
+
+        batch.forEach(
+            (row) => {
+                params.push(
+                    row.sku,
+                    row.godownId,
+                    row.rackId,
+                    row.quantity
+                );
+            }
+        );
+
+        await connection.query(
+            `
+            INSERT INTO stock
+            (
+                sku,
+                godown_id,
+                rack_id,
+                quantity
+            )
+            VALUES ${placeholders}
+            `,
+            params
+        );
+    }
+}
+
+
+/*
+ * Updates multiple existing stock rows
+ * to their final calculated quantities.
+ */
+export async function updateStockQuantitiesBatch({
+    rows,
+    connection
+}) {
+    if (
+        !Array.isArray(rows) ||
+        rows.length === 0
+    ) {
+        return;
+    }
+
+    if (!connection) {
+        throw new Error(
+            "Database connection is required for stock mutations"
+        );
+    }
+
+    const BATCH_SIZE = 500;
+
+    for (
+        let start = 0;
+        start < rows.length;
+        start += BATCH_SIZE
+    ) {
+        const batch =
+            rows.slice(
+                start,
+                start + BATCH_SIZE
+            );
+
+        const caseParts = [];
+        const caseParams = [];
+        const idPlaceholders = [];
+        const idParams = [];
+
+        batch.forEach(
+            (row) => {
+                caseParts.push(
+                    "WHEN ? THEN ?"
+                );
+
+                caseParams.push(
+                    row.id,
+                    row.quantity
+                );
+
+                idPlaceholders.push(
+                    "?"
+                );
+
+                idParams.push(
+                    row.id
+                );
+            }
+        );
+
+        await connection.query(
+            `
+            UPDATE stock
+            SET
+                quantity =
+                    CASE id
+                        ${caseParts.join(
+                            "\n"
+                        )}
+                        ELSE quantity
+                    END,
+                updated_at =
+                    CURRENT_TIMESTAMP
+            WHERE id IN (
+                ${idPlaceholders.join(
+                    ", "
+                )}
+            )
+            `,
+            [
+                ...caseParams,
+                ...idParams
+            ]
+        );
+    }
+}
+
+
 /*
  * Returns paginated stock with
  * search, filters and sorting.
@@ -301,6 +670,7 @@ export async function decrementStock({
 
     return result.affectedRows;
 }
+
 
 export async function getStockSummary() {
     const pool = getPool();

@@ -6,7 +6,13 @@ import {
     insertStock,
     incrementStock,
     decrementStock,
-    getStockSummary
+    getStockSummary,
+    getActiveSkus,
+    getActiveGodowns,
+    getActiveRacks,
+    getStockRowsForMovements,
+    insertStockBatch,
+    updateStockQuantitiesBatch
 } from "../database/stock.repository.js";
 
 
@@ -289,10 +295,8 @@ async function validateRack(
 /*
  * Applies one stock movement.
  *
- * This function requires an existing
- * database connection because it is
- * intended to participate in the same
- * transaction as workflow submission.
+ * This function remains unchanged in
+ * behavior for individual callers.
  */
 export async function applyStockMovement({
     sku,
@@ -478,6 +482,508 @@ export async function applyStockMovement({
     };
 }
 
+
+/*
+ * Applies multiple stock movements while
+ * preserving the exact order-sensitive
+ * behavior of individual movements.
+ *
+ * IMPORTANT:
+ *
+ * We do NOT simply calculate:
+ *
+ *     total IN - total OUT
+ *
+ * before checking stock.
+ *
+ * Every movement is simulated in its
+ * original order against the evolving
+ * quantity for that exact SKU +
+ * Godown + Rack location.
+ *
+ * This prevents an OUT from being
+ * accidentally bypassed by a later IN.
+ */
+export async function applyStockMovements({
+    movements,
+    connection
+}) {
+    if (!connection) {
+        throw new Error(
+            "Database connection is required for stock movement"
+        );
+    }
+
+    if (
+        !Array.isArray(movements) ||
+        movements.length === 0
+    ) {
+        return [];
+    }
+
+    /*
+     * Normalize everything before making
+     * any database mutation.
+     */
+    const normalizedMovements =
+        movements.map(
+            (movement) => {
+                if (
+                    !movement ||
+                    typeof movement !==
+                        "object" ||
+                    Array.isArray(
+                        movement
+                    )
+                ) {
+                    throw new Error(
+                        "Invalid stock movement item"
+                    );
+                }
+
+                const sku =
+                    normalizeSku(
+                        movement.sku
+                    );
+
+                const quantity =
+                    normalizePositiveQuantity(
+                        movement.quantity
+                    );
+
+                const godownId =
+                    normalizePositiveInteger(
+                        movement.godownId,
+                        "Godown ID"
+                    );
+
+                const rackId =
+                    normalizePositiveInteger(
+                        movement.rackId,
+                        "Rack ID"
+                    );
+
+                return {
+                    sku,
+                    godownId,
+                    rackId,
+                    quantity,
+                    movementType:
+                        movement.movementType
+                            .trim()
+                            .toLowerCase()
+                };
+            }
+        );
+
+    const invalidMovement =
+        normalizedMovements.find(
+            (movement) =>
+                movement.movementType !==
+                    "in" &&
+                movement.movementType !==
+                    "out"
+        );
+
+    if (invalidMovement) {
+        throw new Error(
+            'Movement type must be "In" or "Out"'
+        );
+    }
+
+    /*
+     * Validate each unique master value
+     * with one query per master.
+     */
+    const uniqueSkus =
+        [
+            ...new Set(
+                normalizedMovements.map(
+                    (movement) =>
+                        movement.sku
+                )
+            )
+        ];
+
+    const uniqueGodownIds =
+        [
+            ...new Set(
+                normalizedMovements.map(
+                    (movement) =>
+                        movement.godownId
+                )
+            )
+        ];
+
+    const uniqueRackIds =
+        [
+            ...new Set(
+                normalizedMovements.map(
+                    (movement) =>
+                        movement.rackId
+                )
+            )
+        ];
+
+    const [
+        activeSkus,
+        activeGodowns,
+        activeRacks
+    ] = await Promise.all([
+        getActiveSkus({
+            skus:
+                uniqueSkus,
+            connection
+        }),
+
+        getActiveGodowns({
+            godownIds:
+                uniqueGodownIds,
+            connection
+        }),
+
+        getActiveRacks({
+            rackIds:
+                uniqueRackIds,
+            connection
+        })
+    ]);
+
+    const activeSkuSet =
+        new Set(
+            activeSkus.map(
+                (row) =>
+                    row.sku_name
+            )
+        );
+
+    const activeGodownSet =
+        new Set(
+            activeGodowns.map(
+                (row) =>
+                    Number(row.id)
+            )
+        );
+
+    const rackGodownMap =
+        new Map(
+            activeRacks.map(
+                (row) => [
+                    Number(row.id),
+                    Number(
+                        row.godown_id
+                    )
+                ]
+            )
+        );
+
+    /*
+     * Validate every movement against
+     * the batch lookup results.
+     */
+    normalizedMovements.forEach(
+        (movement) => {
+            if (
+                !activeSkuSet.has(
+                    movement.sku
+                )
+            ) {
+                throw new Error(
+                    `SKU "${movement.sku}" does not exist or is inactive`
+                );
+            }
+
+            if (
+                !activeGodownSet.has(
+                    movement.godownId
+                )
+            ) {
+                throw new Error(
+                    "Godown does not exist or is inactive"
+                );
+            }
+
+            if (
+                !rackGodownMap.has(
+                    movement.rackId
+                )
+            ) {
+                throw new Error(
+                    "Rack does not exist or is inactive"
+                );
+            }
+
+            if (
+                rackGodownMap.get(
+                    movement.rackId
+                ) !==
+                movement.godownId
+            ) {
+                throw new Error(
+                    "Rack does not belong to the selected Godown"
+                );
+            }
+        }
+    );
+
+    /*
+     * Fetch all existing stock rows once
+     * and lock them for the duration of
+     * the surrounding workflow transaction.
+     */
+    const existingStockRows =
+        await getStockRowsForMovements({
+            movements:
+                normalizedMovements,
+            connection
+        });
+
+    const stockMap =
+        new Map();
+
+    existingStockRows.forEach(
+        (row) => {
+            const key =
+                `${row.sku}\u0000${Number(row.godown_id)}\u0000${Number(row.rack_id)}`;
+
+            stockMap.set(
+                key,
+                {
+                    id:
+                        Number(row.id),
+                    sku:
+                        row.sku,
+                    godownId:
+                        Number(
+                            row.godown_id
+                        ),
+                    rackId:
+                        Number(
+                            row.rack_id
+                        ),
+                    initialQuantity:
+                        Number(
+                            row.quantity
+                        ),
+                    quantity:
+                        Number(
+                            row.quantity
+                        ),
+                    existed:
+                        true
+                }
+            );
+        }
+    );
+
+    /*
+     * Track locations that do not yet have
+     * a stock row as well.
+     *
+     * We create a zero starting balance
+     * in memory. An OUT against it fails
+     * exactly as it does in the existing
+     * single-row implementation.
+     */
+    const affectedLocations =
+        new Map();
+
+    normalizedMovements.forEach(
+        (movement) => {
+            const key =
+                `${movement.sku}\u0000${movement.godownId}\u0000${movement.rackId}`;
+
+            if (
+                !affectedLocations.has(
+                    key
+                )
+            ) {
+                const existing =
+                    stockMap.get(key);
+
+                affectedLocations.set(
+                    key,
+                    existing || {
+                        id: null,
+                        sku:
+                            movement.sku,
+                        godownId:
+                            movement.godownId,
+                        rackId:
+                            movement.rackId,
+                        initialQuantity:
+                            0,
+                        quantity:
+                            0,
+                        existed:
+                            false
+                    }
+                );
+            }
+        }
+    );
+
+    /*
+     * IMPORTANT:
+     *
+     * Simulate movements in their
+     * original input order.
+     *
+     * This is what prevents aggregation
+     * from bypassing insufficient-stock
+     * checks.
+     */
+    normalizedMovements.forEach(
+        (movement) => {
+            const key =
+                `${movement.sku}\u0000${movement.godownId}\u0000${movement.rackId}`;
+
+            const location =
+                affectedLocations.get(
+                    key
+                );
+
+            if (
+                movement.movementType ===
+                "in"
+            ) {
+                location.quantity +=
+                    movement.quantity;
+
+                return;
+            }
+
+            if (
+                location.quantity <
+                movement.quantity
+            ) {
+                if (
+                    location.quantity <=
+                    0
+                ) {
+                    throw new Error(
+                        `Insufficient stock for SKU "${movement.sku}". Please check whether the incoming stock details were missed.`
+                    );
+                }
+
+                throw new Error(
+                    `Insufficient stock for SKU "${movement.sku}". Available: ${location.quantity}, requested: ${movement.quantity}. Please check whether the incoming stock details were missed.`
+                );
+            }
+
+            location.quantity -=
+                movement.quantity;
+        }
+    );
+
+    /*
+     * Split final locations into existing
+     * rows and genuinely new rows.
+     */
+    const rowsToUpdate = [];
+    const rowsToInsert = [];
+
+    affectedLocations.forEach(
+        (location) => {
+            if (location.existed) {
+                rowsToUpdate.push({
+                    id:
+                        location.id,
+                    quantity:
+                        location.quantity
+                });
+
+                return;
+            }
+
+            /*
+             * A new row can reach this point
+             * only after at least one IN has
+             * succeeded in the simulation.
+             *
+             * We intentionally insert a zero
+             * row if the sequence ended at
+             * zero, matching the existing
+             * implementation:
+             *
+             *   IN 10
+             *   OUT 10
+             *
+             * creates the stock row and
+             * leaves quantity at zero.
+             */
+            rowsToInsert.push({
+                sku:
+                    location.sku,
+                godownId:
+                    location.godownId,
+                rackId:
+                    location.rackId,
+                quantity:
+                    location.quantity
+            });
+        }
+    );
+
+    /*
+     * No database mutation occurs until
+     * every validation and every
+     * insufficient-stock check above
+     * has passed.
+     */
+    await updateStockQuantitiesBatch({
+        rows:
+            rowsToUpdate,
+        connection
+    });
+
+    await insertStockBatch({
+        rows:
+            rowsToInsert,
+        connection
+    });
+
+    /*
+     * Return one result per original
+     * movement, preserving the API shape
+     * conceptually used by the existing
+     * single-movement operation.
+     *
+     * We do not perform another SELECT
+     * for every row.
+     */
+    return normalizedMovements.map(
+        (movement) => {
+            const key =
+                `${movement.sku}\u0000${movement.godownId}\u0000${movement.rackId}`;
+
+            const location =
+                affectedLocations.get(
+                    key
+                );
+
+            return {
+                sku:
+                    movement.sku,
+                godownId:
+                    movement.godownId,
+                rackId:
+                    movement.rackId,
+                movementType:
+                    movement.movementType ===
+                    "in"
+                        ? "In"
+                        : "Out",
+                quantity:
+                    movement.quantity,
+                stockQuantity:
+                    location.quantity
+            };
+        }
+    );
+}
+
+
 /*
  * Returns paginated stock with
  * search, filters and sorting.
@@ -569,6 +1075,7 @@ export async function getStockList({
             normalizedSortOrder
     });
 }
+
 
 export async function getStockSummaryService() {
     return getStockSummary();

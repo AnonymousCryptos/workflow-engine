@@ -112,13 +112,27 @@ function getFieldColumns(
 }
 
 
+/*
+ * Resolve all lookup labels in batches.
+ *
+ * Previously this executed one MySQL query for every
+ * lookup value found in the stage data.
+ *
+ * Example:
+ * 500 rows x godown/rack/sku lookups
+ * could result in hundreds or thousands of queries.
+ *
+ * This version performs one query per lookup master
+ * and stores the results in a Map.
+ */
 async function resolveLookupLabels(
     fields,
     stageData
 ) {
     const pool = getPool();
 
-    const lookupRequests = [];
+    const lookupRequests =
+        new Map();
 
     function collectFields(
         fieldList,
@@ -142,12 +156,29 @@ async function resolveLookupLabels(
                 value !== null &&
                 value !== ""
             ) {
-                lookupRequests.push({
-                    master:
-                        field.lookup.master,
-                    value,
-                    field
-                });
+                const master =
+                    field.lookup.master;
+
+                if (
+                    !lookupRequests.has(
+                        master
+                    )
+                ) {
+                    lookupRequests.set(
+                        master,
+                        new Map()
+                    );
+                }
+
+                const values =
+                    lookupRequests.get(
+                        master
+                    );
+
+                values.set(
+                    String(value),
+                    value
+                );
             }
 
             if (
@@ -177,73 +208,84 @@ async function resolveLookupLabels(
     const resolved =
         new Map();
 
-    for (
-        const request of lookupRequests
-    ) {
-        const master =
-            request.master;
+    const masterConfig = {
+        sku: {
+            table: "sku_details",
+            valueColumn: "sku_name",
+            labelColumn: "sku_name"
+        },
 
-        const value =
-            request.value;
+        party: {
+            table: "party_details",
+            valueColumn: "party_name",
+            labelColumn: "party_name"
+        },
 
-        const field =
-            request.field;
+        user: {
+            table: "users",
+            valueColumn: "id",
+            labelColumn: "name"
+        },
 
-        let table;
-        let valueColumn;
-        let labelColumn;
+        godown: {
+            table: "godowns",
+            valueColumn: "id",
+            labelColumn: "name"
+        },
 
-        switch (master) {
-            case "sku":
-                table = "sku_details";
-                valueColumn = "sku_name";
-                labelColumn = "sku_name";
-                break;
-
-            case "party":
-                table = "party_details";
-                valueColumn = "party_name";
-                labelColumn = "party_name";
-                break;
-
-            case "user":
-                table = "users";
-                valueColumn = "id";
-                labelColumn = "name";
-                break;
-
-            case "godown":
-                table = "godowns";
-                valueColumn = "id";
-                labelColumn = "name";
-                break;
-
-            case "rack":
-                table = "racks";
-                valueColumn = "id";
-                labelColumn = "name";
-                break;
-
-            default:
-                continue;
+        rack: {
+            table: "racks",
+            valueColumn: "id",
+            labelColumn: "name"
         }
+    };
+
+    for (
+        const [
+            master,
+            valuesMap
+        ] of lookupRequests
+    ) {
+        const config =
+            masterConfig[master];
+
+        if (!config) {
+            continue;
+        }
+
+        const values =
+            Array.from(
+                valuesMap.values()
+            );
+
+        if (values.length === 0) {
+            continue;
+        }
+
+        const placeholders =
+            values
+                .map(
+                    () => "?"
+                )
+                .join(", ");
 
         const [rows] =
             await pool.query(
                 `
                 SELECT
-                    ${labelColumn} AS label
-                FROM ${table}
-                WHERE ${valueColumn} = ?
-                LIMIT 1
+                    ${config.valueColumn} AS value,
+                    ${config.labelColumn} AS label
+                FROM ${config.table}
+                WHERE ${config.valueColumn}
+                    IN (${placeholders})
                 `,
-                [value]
+                values
             );
 
-        if (rows.length > 0) {
+        for (const row of rows) {
             resolved.set(
-                `${master}:${String(value)}`,
-                rows[0].label
+                `${master}:${String(row.value)}`,
+                row.label
             );
         }
     }
@@ -345,6 +387,88 @@ async function collectSkuNames(
     return [
         ...new Set(skuNames)
     ];
+}
+
+
+/*
+ * Fetch unique SKU images with limited concurrency.
+ *
+ * This prevents the same image from being downloaded
+ * repeatedly when a SKU appears in many rows.
+ */
+async function buildSkuImageMap(
+    skuMap
+) {
+    const imageMap =
+        new Map();
+
+    const imageRequests = [];
+
+    for (
+        const [
+            sku,
+            skuDetail
+        ] of skuMap
+    ) {
+        if (
+            skuDetail?.image_url
+        ) {
+            imageRequests.push({
+                sku,
+                imageUrl:
+                    skuDetail.image_url
+            });
+        }
+    }
+
+    /*
+     * Fetch at most 10 images concurrently.
+     * This is much faster than downloading every
+     * image sequentially while avoiding an excessive
+     * number of simultaneous HTTP requests.
+     */
+    const BATCH_SIZE = 10;
+
+    for (
+        let start = 0;
+        start < imageRequests.length;
+        start += BATCH_SIZE
+    ) {
+        const batch =
+            imageRequests.slice(
+                start,
+                start + BATCH_SIZE
+            );
+
+        const results =
+            await Promise.all(
+                batch.map(
+                    async ({
+                        sku,
+                        imageUrl
+                    }) => ({
+                        sku,
+                        imageBuffer:
+                            await fetchImage(
+                                imageUrl
+                            )
+                    })
+                )
+            );
+
+        for (const result of results) {
+            if (
+                result.imageBuffer
+            ) {
+                imageMap.set(
+                    String(result.sku),
+                    result.imageBuffer
+                );
+            }
+        }
+    }
+
+    return imageMap;
 }
 
 
@@ -633,7 +757,8 @@ async function drawArrayTable(
     field,
     rows,
     lookupLabels,
-    skuMap
+    skuMap,
+    skuImageMap
 ) {
     if (
         !Array.isArray(rows) ||
@@ -903,6 +1028,10 @@ async function drawArrayTable(
 
             /*
              * IMAGE column.
+             *
+             * Image data was already fetched before
+             * PDF rendering started. No network request
+             * happens inside this row loop anymore.
              */
             if (
                 column.key ===
@@ -911,34 +1040,25 @@ async function drawArrayTable(
                 const skuValue =
                     row.sku;
 
-                const skuDetail =
-                    skuMap?.get(
+                const imageBuffer =
+                    skuImageMap?.get(
                         String(skuValue)
                     );
 
-                if (
-                    skuDetail?.image_url
-                ) {
-                    const imageBuffer =
-                        await fetchImage(
-                            skuDetail.image_url
-                        );
-
-                    if (imageBuffer) {
-                        document.image(
-                            imageBuffer,
-                            currentX + 7,
-                            y + 7,
-                            {
-                                fit: [
-                                    width - 14,
-                                    rowHeight - 14
-                                ],
-                                align: "center",
-                                valign: "center"
-                            }
-                        );
-                    }
+                if (imageBuffer) {
+                    document.image(
+                        imageBuffer,
+                        currentX + 7,
+                        y + 7,
+                        {
+                            fit: [
+                                width - 14,
+                                rowHeight - 14
+                            ],
+                            align: "center",
+                            valign: "center"
+                        }
+                    );
                 }
             } else {
                 const value =
@@ -980,8 +1100,6 @@ async function drawArrayTable(
     document.y =
         y + 20;
 }
-
-
 
 
 export async function generateWorkflowPdf(
@@ -1080,12 +1198,18 @@ export async function generateWorkflowPdf(
         );
     }
 
+    /*
+     * Resolve all lookup labels with batched DB queries.
+     */
     const lookupLabels =
         await resolveLookupLabels(
             stage.fields || [],
             stageData
         );
 
+    /*
+     * Collect unique SKUs first.
+     */
     const skuNames =
         await collectSkuNames(
             stage.fields || [],
@@ -1111,6 +1235,17 @@ export async function generateWorkflowPdf(
                 )
             );
     }
+
+    /*
+     * Fetch every unique SKU image once.
+     *
+     * This happens before PDF rendering so the
+     * rendering loop contains no network requests.
+     */
+    const skuImageMap =
+        await buildSkuImageMap(
+            skuMap
+        );
 
     const document =
         new PDFDocument({
@@ -1198,7 +1333,8 @@ export async function generateWorkflowPdf(
             field,
             stageData[field.key],
             lookupLabels,
-            skuMap
+            skuMap,
+            skuImageMap
         );
     }
 

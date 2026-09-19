@@ -1,4 +1,5 @@
 import express from "express";
+import multer from "multer";
 
 import {
     createWorkflow,
@@ -10,7 +11,9 @@ import {
     getActiveWorkflowRuns,
     getWorkflowRunById,
     getWorkflowRunHistory,
-    getWorkflowStageHistory
+    getWorkflowStageHistory,
+    validateWorkflowBulkUpload,
+    downloadFailedWorkflowRows
 } from "../controllers/workflow.controller.js";
 
 import {
@@ -19,6 +22,13 @@ import {
 } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
+
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 10 * 1024 * 1024
+    }
+});
 
 router.post(
     "/",
@@ -31,6 +41,19 @@ router.post(
     "/runs",
     authenticate,
     createWorkflowRun
+);
+
+router.post(
+    "/bulk/validate",
+    authenticate,
+    upload.single("file"),
+    validateWorkflowBulkUpload
+);
+
+router.get(
+    "/bulk/validation/:validationId/failed",
+    authenticate,
+    downloadFailedWorkflowRows
 );
 
 router.get(
@@ -79,6 +102,28 @@ router.get(
     "/:id",
     authenticate,
     getWorkflowById
+);
+
+router.use(
+    (
+        error,
+        req,
+        res,
+        next
+    ) => {
+        if (
+            error instanceof multer.MulterError &&
+            error.code === "LIMIT_FILE_SIZE"
+        ) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "File size cannot exceed 10 MB."
+            });
+        }
+
+        next(error);
+    }
 );
 
 export default router;

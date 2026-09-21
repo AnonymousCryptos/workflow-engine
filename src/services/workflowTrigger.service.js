@@ -47,6 +47,18 @@ async function executeStockMovementTrigger({
     const items =
         stageData?.[itemsField];
 
+    /*
+     * If the selected chooseOne field is
+     * another field (for example "pcwise"),
+     * this stock trigger has nothing to process.
+     *
+     * Existing workflows are unaffected because
+     * their itemsField value remains an array.
+     */
+    if (items === null || items === undefined) {
+        return;
+    }
+
     if (!Array.isArray(items)) {
         throw new Error(
             `Stock movement field "${itemsField}" must contain an array`

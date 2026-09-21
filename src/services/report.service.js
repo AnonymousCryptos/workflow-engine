@@ -170,6 +170,11 @@ function extractSkuQuantities(
             fieldConfig.itemsField
         ];
 
+    /*
+     * If the selected field is pcwise,
+     * items is null and this stage does
+     * not contribute to the SKU report.
+     */
     if (!Array.isArray(items)) {
         return new Map();
     }

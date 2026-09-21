@@ -181,6 +181,60 @@ function validateFields(
     }
 }
 
+function validateChooseOneFields(
+    chooseOneFields,
+    stageName,
+    fields
+) {
+    if (chooseOneFields === undefined) {
+        return;
+    }
+
+    if (
+        !Array.isArray(chooseOneFields) ||
+        chooseOneFields.length < 2
+    ) {
+        throw new Error(
+            `Stage "${stageName}" chooseOneFields must contain at least two field keys`
+        );
+    }
+
+    const fieldKeys =
+        new Set(
+            fields.map(
+                (field) => field.key
+            )
+        );
+
+    const seen =
+        new Set();
+
+    for (const fieldKey of chooseOneFields) {
+        if (
+            typeof fieldKey !== "string" ||
+            fieldKey.trim() === ""
+        ) {
+            throw new Error(
+                `Stage "${stageName}" chooseOneFields must contain valid field keys`
+            );
+        }
+
+        if (seen.has(fieldKey)) {
+            throw new Error(
+                `Stage "${stageName}" chooseOneFields cannot contain duplicate field keys`
+            );
+        }
+
+        if (!fieldKeys.has(fieldKey)) {
+            throw new Error(
+                `Stage "${stageName}" chooseOneFields references unknown field "${fieldKey}"`
+            );
+        }
+
+        seen.add(fieldKey);
+    }
+}
+
 function validateStageData(
     fields,
     stageData,
@@ -320,6 +374,40 @@ function validateStageData(
                 );
             }
         }
+    }
+}
+
+function validateChooseOneValues(
+    chooseOneFields,
+    stageData,
+    stageName
+) {
+    if (!chooseOneFields) {
+        return;
+    }
+
+    const fieldsWithValues =
+        chooseOneFields.filter(
+            (fieldKey) => {
+                const value =
+                    stageData[fieldKey];
+
+                return (
+                    value !== null &&
+                    value !== undefined &&
+                    value !== "" &&
+                    (
+                        !Array.isArray(value) ||
+                        value.length > 0
+                    )
+                );
+            }
+        );
+
+    if (fieldsWithValues.length !== 1) {
+        throw new Error(
+            `Stage "${stageName}" requires exactly one of: ${chooseOneFields.join(", ")}`
+        );
     }
 }
 
@@ -654,6 +742,12 @@ function validateWorkflow(
         validateFields(
             stage.fields,
             `fields of stage "${stage.name}"`
+        );
+
+        validateChooseOneFields(
+            stage.chooseOneFields,
+            stage.name,
+            stage.fields
         );
 
         validateStageTriggers(
@@ -1079,6 +1173,12 @@ export async function createWorkflowRunService({
         normalizedStageData
     );
 
+    validateChooseOneValues(
+        firstStage.chooseOneFields,
+        normalizedStageData,
+        firstStage.name
+    );
+
     /*
      * Stage 1 assignment is for
      * the next stage.
@@ -1347,6 +1447,12 @@ export async function submitWorkflowStageService({
     validateStageData(
         currentStage.fields || [],
         normalizedStageData
+    );
+
+    validateChooseOneValues(
+        currentStage.chooseOneFields,
+        normalizedStageData,
+        currentStage.name
     );
 
 

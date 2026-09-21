@@ -6,6 +6,7 @@ import {
     getAllWorkflows,
     createWorkflowRun,
     submitWorkflowStage,
+    skipWorkflowStage,
     getWorkflowById,
     downloadWorkflowPdf,
     getActiveWorkflowRuns,
@@ -78,6 +79,12 @@ router.post(
     "/runs/:id/stages",
     authenticate,
     submitWorkflowStage
+);
+
+router.post(
+    "/runs/:id/skip",
+    authenticate,
+    skipWorkflowStage
 );
 
 router.get(

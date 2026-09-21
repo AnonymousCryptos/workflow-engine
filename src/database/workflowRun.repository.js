@@ -214,6 +214,114 @@ export async function submitWorkflowStage({
     }
 }
 
+export async function skipWorkflowStage({
+    workflowRunId,
+    nextStageId,
+    stageId,
+    performedBy,
+    completed
+}) {
+    const pool = getPool();
+
+    const connection =
+        await pool.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        const [runRows] =
+            await connection.query(
+                `
+                SELECT
+                    id,
+                    status,
+                    current_stage_id
+                FROM workflow_runs
+                WHERE id = ?
+                FOR UPDATE
+                `,
+                [workflowRunId]
+            );
+
+        if (runRows.length === 0) {
+            throw new Error(
+                "Workflow run not found"
+            );
+        }
+
+        const run = runRows[0];
+
+        if (
+            run.status ===
+            "completed"
+        ) {
+            throw new Error(
+                "Workflow run is already completed"
+            );
+        }
+
+        if (
+            Number(run.current_stage_id) !==
+            Number(stageId)
+        ) {
+            throw new Error(
+                "Skipped stage is not the current stage"
+            );
+        }
+
+        await connection.query(
+            `
+            INSERT INTO workflow_stage_history
+            (
+                workflow_run_id,
+                stage_id,
+                stage_data,
+                remark,
+                performed_by,
+                completed_at,
+                skipped
+            )
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, TRUE)
+            `,
+            [
+                workflowRunId,
+                stageId,
+                JSON.stringify({}),
+                null,
+                performedBy
+            ]
+        );
+
+        await connection.query(
+            `
+            UPDATE workflow_runs
+            SET
+                current_stage_id = ?,
+                status = ?,
+                completed_at = ?
+            WHERE id = ?
+            `,
+            [
+                nextStageId,
+                completed
+                    ? "completed"
+                    : "running",
+                completed
+                    ? new Date()
+                    : null,
+                workflowRunId
+            ]
+        );
+
+        await connection.commit();
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
+    }
+}
+
 export async function getWorkflowRunById(
     workflowRunId
 ) {
@@ -513,6 +621,7 @@ export async function getWorkflowStageHistory({
                 wsh.stage_id,
                 wsh.stage_data,
                 wsh.remark,
+                wsh.skipped,
                 wsh.performed_by,
                 u.name AS performed_by_name,
                 wsh.entered_at,
@@ -657,6 +766,9 @@ export async function getWorkflowStageHistory({
                 remark:
                     stage.remark,
 
+                skipped:
+                    Boolean(stage.skipped),
+
                 performedBy:
                     stage.performed_by
                         ? {
@@ -692,7 +804,8 @@ export async function getPreviousStageHistory(
                 id,
                 workflow_run_id,
                 stage_id,
-                stage_data
+                stage_data,
+                skipped
             FROM workflow_stage_history
             WHERE workflow_run_id = ?
               AND stage_id = ?
@@ -716,6 +829,8 @@ export async function getPreviousStageHistory(
         stageId:
             rows[0].stage_id,
         stageData:
-            rows[0].stage_data
+            rows[0].stage_data,
+        skipped:
+            Boolean(rows[0].skipped)
     };
 }

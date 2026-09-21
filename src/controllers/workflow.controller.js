@@ -5,6 +5,7 @@ import {
     getAllWorkflowsService,
     createWorkflowRunService,
     submitWorkflowStageService,
+    skipWorkflowStageService,
     getWorkflowByIdService,
     getActiveWorkflowRunsService,
     getWorkflowRunByIdService,
@@ -215,6 +216,34 @@ export async function submitWorkflowStage(
             await submitWorkflowStageService({
                 workflowRunId: id,
                 stageData,
+                userId: req.user.userId
+            });
+
+        res.json({
+            success: true,
+            data: result
+        });
+    } catch (error) {
+        console.error(error);
+
+        res.status(400).json({
+            success: false,
+            message: error.message
+        });
+    }
+}
+
+export async function skipWorkflowStage(
+    req,
+    res
+) {
+    try {
+        const { id } =
+            req.params;
+
+        const result =
+            await skipWorkflowStageService({
+                workflowRunId: id,
                 userId: req.user.userId
             });
 

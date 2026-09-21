@@ -11,7 +11,8 @@ import {
     getWorkflowRunHistory,
     getWorkflowStageHistory,
     getPreviousStageHistory,
-    submitWorkflowStage
+    submitWorkflowStage,
+    skipWorkflowStage
 } from "../database/workflowRun.repository.js";
 
 import {
@@ -627,6 +628,18 @@ function validateWorkflow(
         ) {
             throw new Error(
                 `Stage "${stage.id}" must have a name`
+            );
+        }
+
+        if (
+            Object.prototype.hasOwnProperty.call(
+                stage,
+                "skippable"
+            ) &&
+            typeof stage.skippable !== "boolean"
+        ) {
+            throw new Error(
+                `Stage "${stage.name}" skippable must be a boolean`
             );
         }
 
@@ -1289,27 +1302,34 @@ export async function submitWorkflowStageService({
             }
         }
 
-        const assignedUsers =
-            normalizeAssignedUsers(
-                previousStageData
-                    ?.assigned_users
-            );
+        /*
+        * If the previous stage was skipped,
+        * the current stage is available to
+        * any authenticated user.
+        */
+        if (!previousHistory.skipped) {
+            const assignedUsers =
+                normalizeAssignedUsers(
+                    previousStageData
+                        ?.assigned_users
+                );
 
-        if (!assignedUsers) {
-            throw new Error(
-                "No valid users are assigned to the current stage"
-            );
-        }
+            if (!assignedUsers) {
+                throw new Error(
+                    "No valid users are assigned to the current stage"
+                );
+            }
 
-        if (
-            !isUserAllowed(
-                assignedUsers,
-                normalizedUserId
-            )
-        ) {
-            throw new Error(
-                "You are not assigned to this stage"
-            );
+            if (
+                !isUserAllowed(
+                    assignedUsers,
+                    normalizedUserId
+                )
+            ) {
+                throw new Error(
+                    "You are not assigned to this stage"
+                );
+            }
         }
     }
 
@@ -1408,6 +1428,218 @@ export async function submitWorkflowStageService({
                 : "running",
         completed:
             isCompleted
+    };
+}
+
+export async function skipWorkflowStageService({
+    workflowRunId,
+    userId
+}) {
+    if (!workflowRunId) {
+        throw new Error(
+            "Workflow run ID is required"
+        );
+    }
+
+    if (!userId) {
+        throw new Error(
+            "Authenticated user is required"
+        );
+    }
+
+    const normalizedUserId =
+        Number(userId);
+
+    if (
+        !Number.isInteger(
+            normalizedUserId
+        ) ||
+        normalizedUserId < 1
+    ) {
+        throw new Error(
+            "Invalid authenticated user"
+        );
+    }
+
+    const run =
+        await getWorkflowRunById(
+            workflowRunId
+        );
+
+    if (!run) {
+        throw new Error(
+            "Workflow run not found"
+        );
+    }
+
+    if (
+        run.status ===
+        "completed"
+    ) {
+        throw new Error(
+            "Workflow run is already completed"
+        );
+    }
+
+    const workflow =
+        await getWorkflowById(
+            run.workflowId
+        );
+
+    if (!workflow) {
+        throw new Error(
+            "Workflow not found"
+        );
+    }
+
+    const currentStageIndex =
+        workflow.stages.findIndex(
+            (stage) =>
+                Number(stage.id) ===
+                Number(
+                    run.currentStageId
+                )
+        );
+
+    if (
+        currentStageIndex === -1
+    ) {
+        throw new Error(
+            `Current stage "${run.currentStageId}" not found in workflow`
+        );
+    }
+
+    const currentStage =
+        workflow.stages[
+            currentStageIndex
+        ];
+
+    /*
+     * Missing skippable means false.
+     */
+    if (
+        currentStage.skippable !== true
+    ) {
+        throw new Error(
+            `Stage "${currentStage.name}" is not skippable`
+        );
+    }
+
+    /*
+     * Stage 1 is controlled by
+     * workflow.canCreate.
+     *
+     * Every later stage gets its
+     * authorization from the PREVIOUS
+     * stage's assigned_users.
+     *
+     * If the previous stage itself
+     * was skipped, this stage is
+     * available to anyone.
+     */
+    if (
+        currentStageIndex > 0
+    ) {
+        const previousStage =
+            workflow.stages[
+                currentStageIndex - 1
+            ];
+
+        const previousHistory =
+            await getPreviousStageHistory(
+                workflowRunId,
+                previousStage.id
+            );
+
+        if (!previousHistory) {
+            throw new Error(
+                "Previous stage history not found"
+            );
+        }
+
+        if (!previousHistory.skipped) {
+            let previousStageData =
+                previousHistory.stageData;
+
+            if (
+                typeof previousStageData ===
+                "string"
+            ) {
+                try {
+                    previousStageData =
+                        JSON.parse(
+                            previousStageData
+                        );
+                } catch {
+                    throw new Error(
+                        "Previous stage data is invalid"
+                    );
+                }
+            }
+
+            const assignedUsers =
+                normalizeAssignedUsers(
+                    previousStageData
+                        ?.assigned_users
+                );
+
+            if (!assignedUsers) {
+                throw new Error(
+                    "No valid users are assigned to the current stage"
+                );
+            }
+
+            if (
+                !isUserAllowed(
+                    assignedUsers,
+                    normalizedUserId
+                )
+            ) {
+                throw new Error(
+                    "You are not assigned to this stage"
+                );
+            }
+        }
+    }
+
+    const nextStage =
+        workflow.stages[
+            currentStageIndex + 1
+        ] || null;
+
+    const isCompleted =
+        nextStage === null;
+
+    await skipWorkflowStage({
+        workflowRunId,
+        nextStageId:
+            isCompleted
+                ? currentStage.id
+                : nextStage.id,
+        stageId:
+            currentStage.id,
+        performedBy:
+            normalizedUserId,
+        completed:
+            isCompleted
+    });
+
+    return {
+        workflowRunId,
+        referenceId:
+            run.referenceId,
+        currentStageId:
+            isCompleted
+                ? currentStage.id
+                : nextStage.id,
+        status:
+            isCompleted
+                ? "completed"
+                : "running",
+        completed:
+            isCompleted,
+        skipped:
+            true
     };
 }
 

@@ -8,6 +8,18 @@ import {
     ADMIN_TABLES
 } from "../config/admin-tables.js";
 
+export async function getAdminTables(
+    req,
+    res
+) {
+    res.json({
+        success: true,
+        tables: Object.keys(
+            ADMIN_TABLES
+        )
+    });
+}
+
 export async function getAdminTableMetadata(
     req,
     res

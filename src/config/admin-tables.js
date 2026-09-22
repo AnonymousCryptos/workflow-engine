@@ -32,6 +32,30 @@ export const ADMIN_TABLES = {
         }
     },
 
+    sku_details: {
+        hiddenColumns: [],
+
+        immutableColumns: [
+            "id",
+            "created_at",
+            "updated_at"
+        ],
+
+        uniqueFields: [
+            "sku_name"
+        ],
+
+        requiredFields: [
+            "sku_name"
+        ],
+
+        writableFields: {
+            sku_name: {},
+            image_url: {},
+            is_active: {}
+        }
+    },
+
     party_details: {
         hiddenColumns: [],
 

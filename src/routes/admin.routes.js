@@ -7,6 +7,7 @@ import {
 } from "../middleware/auth.middleware.js";
 
 import {
+    getAdminTables,
     getAdminTableMetadata,
     getAdminTableData,
     createAdminTableRow
@@ -29,6 +30,13 @@ const upload =
                 10 * 1024 * 1024
         }
     });
+
+router.get(
+    "/tables",
+    authenticate,
+    authorize("admin"),
+    getAdminTables
+);
 
 router.get(
     "/tables/:table",

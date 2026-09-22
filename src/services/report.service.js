@@ -342,14 +342,14 @@ function createReportRow(
 ) {
     const workflowReference =
         run.reference_name
-            ? `${run.workflow_name}-${run.reference_name}`
+            ? `${run.workflow_name}:${run.reference_name}`
             : run.workflow_name;
 
     return {
         "Reference ID":
             run.reference_id,
 
-        "Workflow":
+        "Workflow:Reference Name":
             workflowReference,
 
         "Initiated Movement Type":
@@ -781,7 +781,7 @@ export async function generateInOutReportService({
             {
                 header: [
                     "Reference ID",
-                    "Workflow",
+                    "Workflow:Reference Name",
                     "Initiated Movement Type",
                     "SKU ID",
                     "Initial Quantity",

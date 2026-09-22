@@ -1,7 +1,7 @@
 import XLSX from "xlsx";
 
 import {
-    getCompletedRunsForReport,
+    getRunsForReport,
     getCurrentStockForReport
 } from "../database/report.repository.js";
 
@@ -29,10 +29,6 @@ function parseDateInput(value, fieldName) {
         );
     }
 
-    /*
-     * Protect against JavaScript normalizing
-     * invalid dates such as 2026-02-31.
-     */
     const [year, month, day] =
         value.split("-").map(Number);
 
@@ -129,16 +125,14 @@ function validateDateRange(
 
 function parseStageData(stageData) {
     if (
-        typeof stageData ===
-        "object" &&
+        typeof stageData === "object" &&
         stageData !== null
     ) {
         return stageData;
     }
 
     if (
-        typeof stageData ===
-        "string"
+        typeof stageData === "string"
     ) {
         try {
             return JSON.parse(
@@ -156,10 +150,22 @@ function parseStageData(stageData) {
     );
 }
 
-function extractSkuQuantities(
+function getStageQuantityData(
     stageData,
     fieldConfig
 ) {
+    if (
+        !fieldConfig ||
+        stageData === null ||
+        stageData === undefined
+    ) {
+        return {
+            type: "none",
+            skuQuantities: new Map(),
+            pcQuantity: null
+        };
+    }
+
     const data =
         parseStageData(
             stageData
@@ -170,69 +176,375 @@ function extractSkuQuantities(
             fieldConfig.itemsField
         ];
 
-    /*
-     * If the selected field is pcwise,
-     * items is null and this stage does
-     * not contribute to the SKU report.
-     */
-    if (!Array.isArray(items)) {
-        return new Map();
+    if (Array.isArray(items)) {
+        const skuQuantities =
+            new Map();
+
+        for (const item of items) {
+            if (
+                !item ||
+                typeof item !== "object"
+            ) {
+                continue;
+            }
+
+            const sku =
+                item[
+                    fieldConfig.skuField
+                ];
+
+            const quantity =
+                Number(
+                    item[
+                        fieldConfig.quantityField
+                    ]
+                );
+
+            if (
+                sku === undefined ||
+                sku === null ||
+                sku === ""
+            ) {
+                continue;
+            }
+
+            if (
+                !Number.isFinite(
+                    quantity
+                )
+            ) {
+                continue;
+            }
+
+            const skuKey =
+                String(sku);
+
+            const existing =
+                skuQuantities.get(
+                    skuKey
+                ) || 0;
+
+            skuQuantities.set(
+                skuKey,
+                existing + quantity
+            );
+        }
+
+        return {
+            type: "sku",
+            skuQuantities,
+            pcQuantity: null
+        };
     }
 
-    const skuQuantities =
-        new Map();
+    const pcwiseField =
+        fieldConfig.pcwiseField ||
+        "pcwise";
 
-    for (const item of items) {
+    const pcQuantity =
+        Number(
+            data[
+                pcwiseField
+            ]
+        );
+
+    if (
+        Number.isFinite(
+            pcQuantity
+        ) &&
+        data[
+            pcwiseField
+        ] !== null &&
+        data[
+            pcwiseField
+        ] !== undefined &&
+        data[
+            pcwiseField
+        ] !== ""
+    ) {
+        return {
+            type: "pc",
+            skuQuantities: new Map(),
+            pcQuantity
+        };
+    }
+
+    return {
+        type: "none",
+        skuQuantities: new Map(),
+        pcQuantity: null
+    };
+}
+
+function formatPcQuantity(
+    quantity
+) {
+    return `pc:${quantity}`;
+}
+
+function getMovementType(
+    run,
+    config
+) {
+    const movementTypeConfig =
+        config.movementType;
+
+    if (!movementTypeConfig) {
+        return "";
+    }
+
+    if (
+        movementTypeConfig.type ===
+        "static"
+    ) {
+        return movementTypeConfig.value;
+    }
+
+    if (
+        movementTypeConfig.type ===
+        "field"
+    ) {
         if (
-            !item ||
-            typeof item !== "object"
+            !run.initial_stage_data
         ) {
-            continue;
+            return "";
         }
 
-        const sku =
-            item[
-                fieldConfig.skuField
-            ];
-
-        const quantity =
-            Number(
-                item[
-                    fieldConfig.quantityField
-                ]
+        const data =
+            parseStageData(
+                run.initial_stage_data
             );
 
-        if (
-            sku === undefined ||
-            sku === null ||
-            sku === ""
-        ) {
-            continue;
-        }
+        const value =
+            data[
+                movementTypeConfig.field
+            ];
 
         if (
-            !Number.isFinite(
+            value === null ||
+            value === undefined
+        ) {
+            return "";
+        }
+
+        return String(value);
+    }
+
+    return "";
+}
+
+function createReportRow(
+    run,
+    movementType,
+    skuId,
+    initialQuantity,
+    finalQuantity
+) {
+    const workflowReference =
+        run.reference_name
+            ? `${run.workflow_name}-${run.reference_name}`
+            : run.workflow_name;
+
+    return {
+        "Reference ID":
+            run.reference_id,
+
+        "Workflow":
+            workflowReference,
+
+        "Initiated Movement Type":
+            movementType,
+
+        "SKU ID":
+            skuId,
+
+        "Initial Quantity":
+            initialQuantity,
+
+        "Final Quantity":
+            finalQuantity
+    };
+}
+
+function buildRowsForSkuToSku(
+    run,
+    initialData,
+    finalData,
+    movementType
+) {
+    const skuSet =
+        new Set([
+            ...initialData.skuQuantities.keys(),
+            ...finalData.skuQuantities.keys()
+        ]);
+
+    return Array.from(
+        skuSet
+    ).map(
+        (skuId) =>
+            createReportRow(
+                run,
+                movementType,
+                skuId,
+                initialData.skuQuantities.get(
+                    skuId
+                ) || 0,
+                finalData.skuQuantities.get(
+                    skuId
+                ) || 0
+            )
+    );
+}
+
+function buildRowsForPcToPc(
+    run,
+    initialData,
+    finalData,
+    movementType
+) {
+    return [
+        createReportRow(
+            run,
+            movementType,
+            "",
+            formatPcQuantity(
+                initialData.pcQuantity
+            ),
+            formatPcQuantity(
+                finalData.pcQuantity
+            )
+        )
+    ];
+}
+
+function buildRowsForPcToSku(
+    run,
+    initialData,
+    finalData,
+    movementType
+) {
+    return Array.from(
+        finalData.skuQuantities.entries()
+    ).map(
+        ([skuId, quantity]) =>
+            createReportRow(
+                run,
+                movementType,
+                skuId,
+                formatPcQuantity(
+                    initialData.pcQuantity
+                ),
                 quantity
             )
-        ) {
-            continue;
-        }
+    );
+}
 
-        const skuKey =
-            String(sku);
+function buildRowsForSkuToPc(
+    run,
+    initialData,
+    finalData,
+    movementType
+) {
+    return Array.from(
+        initialData.skuQuantities.entries()
+    ).map(
+        ([skuId, quantity]) =>
+            createReportRow(
+                run,
+                movementType,
+                skuId,
+                quantity,
+                formatPcQuantity(
+                    finalData.pcQuantity
+                )
+            )
+    );
+}
 
-        const existing =
-            skuQuantities.get(
-                skuKey
-            ) || 0;
+function buildPendingRows(
+    run,
+    initialData,
+    movementType
+) {
+    if (
+        initialData.type ===
+        "pc"
+    ) {
+        return [
+            createReportRow(
+                run,
+                movementType,
+                "",
+                formatPcQuantity(
+                    initialData.pcQuantity
+                ),
+                "Pending"
+            )
+        ];
+    }
 
-        skuQuantities.set(
-            skuKey,
-            existing + quantity
+    if (
+        initialData.type ===
+        "sku"
+    ) {
+        return Array.from(
+            initialData.skuQuantities.entries()
+        ).map(
+            ([skuId, quantity]) =>
+                createReportRow(
+                    run,
+                    movementType,
+                    skuId,
+                    quantity,
+                    "Pending"
+                )
         );
     }
 
-    return skuQuantities;
+    return [];
+}
+
+function buildSingleStageRows(
+    run,
+    initialData,
+    movementType
+) {
+    if (
+        initialData.type ===
+        "pc"
+    ) {
+        return [
+            createReportRow(
+                run,
+                movementType,
+                "",
+                formatPcQuantity(
+                    initialData.pcQuantity
+                ),
+                ""
+            )
+        ];
+    }
+
+    if (
+        initialData.type ===
+        "sku"
+    ) {
+        return Array.from(
+            initialData.skuQuantities.entries()
+        ).map(
+            ([skuId, quantity]) =>
+                createReportRow(
+                    run,
+                    movementType,
+                    skuId,
+                    quantity,
+                    ""
+                )
+        );
+    }
+
+    return [];
 }
 
 function buildReportRows(
@@ -244,7 +556,9 @@ function buildReportRows(
     for (const run of runs) {
         const config =
             workflowConfigs[
-                String(run.workflow_id)
+                String(
+                    run.workflow_id
+                )
             ] ||
             workflowConfigs[
                 run.workflow_id
@@ -254,45 +568,143 @@ function buildReportRows(
             continue;
         }
 
-        const initialQuantities =
-            extractSkuQuantities(
+        const initialData =
+            getStageQuantityData(
                 run.initial_stage_data,
                 config.initial
             );
 
-        const finalQuantities =
-            extractSkuQuantities(
+        const movementType =
+            getMovementType(
+                run,
+                config
+            );
+
+        /*
+         * Stock-In and Stock-Out have
+         * only one report stage.
+         */
+        if (
+            !config.final
+        ) {
+            reportRows.push(
+                ...buildSingleStageRows(
+                    run,
+                    initialData,
+                    movementType
+                )
+            );
+
+            continue;
+        }
+
+        /*
+         * The run has not reached the
+         * configured final stage yet.
+         */
+        if (
+            run.final_stage_data ===
+            null ||
+            run.final_stage_data ===
+            undefined
+        ) {
+            reportRows.push(
+                ...buildPendingRows(
+                    run,
+                    initialData,
+                    movementType
+                )
+            );
+
+            continue;
+        }
+
+        const finalData =
+            getStageQuantityData(
                 run.final_stage_data,
                 config.final
             );
 
-        const skuSet =
-            new Set([
-                ...initialQuantities.keys(),
-                ...finalQuantities.keys()
-            ]);
+        /*
+         * SKU -> SKU
+         */
+        if (
+            initialData.type ===
+                "sku" &&
+            finalData.type ===
+                "sku"
+        ) {
+            reportRows.push(
+                ...buildRowsForSkuToSku(
+                    run,
+                    initialData,
+                    finalData,
+                    movementType
+                )
+            );
 
-        for (const skuId of skuSet) {
-            reportRows.push({
-                "Reference ID":
-                    run.reference_id,
+            continue;
+        }
 
-                "Workflow":
-                    run.workflow_name,
+        /*
+         * PC -> PC
+         */
+        if (
+            initialData.type ===
+                "pc" &&
+            finalData.type ===
+                "pc"
+        ) {
+            reportRows.push(
+                ...buildRowsForPcToPc(
+                    run,
+                    initialData,
+                    finalData,
+                    movementType
+                )
+            );
 
-                "SKU ID":
-                    skuId,
+            continue;
+        }
 
-                "Initial Quantity":
-                    initialQuantities.get(
-                        skuId
-                    ) || 0,
+        /*
+         * PC -> SKU
+         */
+        if (
+            initialData.type ===
+                "pc" &&
+            finalData.type ===
+                "sku"
+        ) {
+            reportRows.push(
+                ...buildRowsForPcToSku(
+                    run,
+                    initialData,
+                    finalData,
+                    movementType
+                )
+            );
 
-                "Final Quantity":
-                    finalQuantities.get(
-                        skuId
-                    ) || 0
-            });
+            continue;
+        }
+
+        /*
+         * SKU -> PC
+         */
+        if (
+            initialData.type ===
+                "sku" &&
+            finalData.type ===
+                "pc"
+        ) {
+            reportRows.push(
+                ...buildRowsForSkuToPc(
+                    run,
+                    initialData,
+                    finalData,
+                    movementType
+                )
+            );
         }
     }
 
@@ -337,7 +749,7 @@ export async function generateInOutReportService({
         );
 
     const runs =
-        await getCompletedRunsForReport({
+        await getRunsForReport({
             startDate,
             endDate,
             workflowIds
@@ -355,11 +767,14 @@ export async function generateInOutReportService({
             config.workflows
         );
 
-    /*
-     * Always create the Excel with
-     * the expected columns, even when
-     * no completed runs exist.
-     */
+    if (
+        reportRows.length === 0
+    ) {
+        throw new Error(
+            "No records found for the selected timeframe."
+        );
+    }
+
     const worksheet =
         XLSX.utils.json_to_sheet(
             reportRows,
@@ -367,6 +782,7 @@ export async function generateInOutReportService({
                 header: [
                     "Reference ID",
                     "Workflow",
+                    "Initiated Movement Type",
                     "SKU ID",
                     "Initial Quantity",
                     "Final Quantity"
@@ -379,16 +795,19 @@ export async function generateInOutReportService({
             wch: 20
         },
         {
-            wch: 30
+            wch: 35
+        },
+        {
+            wch: 28
         },
         {
             wch: 20
         },
         {
-            wch: 18
+            wch: 20
         },
         {
-            wch: 18
+            wch: 20
         }
     ];
 

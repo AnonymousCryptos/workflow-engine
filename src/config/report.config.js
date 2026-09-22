@@ -16,6 +16,11 @@ export const REPORT_CONFIG = {
                     itemsField: "received_items",
                     skuField: "sku",
                     quantityField: "quantity"
+                },
+
+                movementType: {
+                    type: "static",
+                    value: "Out"
                 }
             },
 
@@ -30,6 +35,41 @@ export const REPORT_CONFIG = {
                     itemsField: "items",
                     skuField: "sku",
                     quantityField: "quantity"
+                },
+
+                movementType: {
+                    type: "field",
+                    field: "movement_type"
+                }
+            },
+
+            3: {
+                initial: {
+                    itemsField: "items",
+                    skuField: "sku",
+                    quantityField: "quantity"
+                },
+
+                final: null,
+
+                movementType: {
+                    type: "static",
+                    value: "In"
+                }
+            },
+
+            4: {
+                initial: {
+                    itemsField: "items",
+                    skuField: "sku",
+                    quantityField: "quantity"
+                },
+
+                final: null,
+
+                movementType: {
+                    type: "static",
+                    value: "Out"
                 }
             }
         }
@@ -38,6 +78,6 @@ export const REPORT_CONFIG = {
     stock: {
         name: "Stock Report",
         description:
-        "This report contains the current stock available across all godowns and racks."
+            "This report contains the current stock available across all godowns and racks."
     }
 };

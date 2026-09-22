@@ -1,6 +1,6 @@
 import { getPool } from "../config/database.js";
 
-export async function getCompletedRunsForReport({
+export async function getRunsForReport({
     startDate,
     endDate,
     workflowIds
@@ -26,13 +26,23 @@ export async function getCompletedRunsForReport({
             wr.reference_id,
             wr.workflow_id,
             w.name AS workflow_name,
+            JSON_UNQUOTE(
+                JSON_EXTRACT(
+                    first_stage.stage_data,
+                    '$.reference_name'
+                )
+            ) AS reference_name,
+            wr.status,
             wr.created_at,
 
             first_stage.stage_data
                 AS initial_stage_data,
 
-            final_stage.stage_data
-                AS final_stage_data
+            CASE
+                WHEN wr.status = 'completed'
+                THEN final_stage.stage_data
+                ELSE NULL
+            END AS final_stage_data
 
         FROM workflow_runs wr
 
@@ -46,16 +56,14 @@ export async function getCompletedRunsForReport({
                 WHERE wsh_first.workflow_run_id = wr.id
             )
 
-        INNER JOIN workflow_stage_history final_stage
+        LEFT JOIN workflow_stage_history final_stage
             ON final_stage.id = (
                 SELECT MAX(wsh_final.id)
                 FROM workflow_stage_history wsh_final
                 WHERE wsh_final.workflow_run_id = wr.id
             )
 
-        WHERE wr.status = 'completed'
-
-          AND wr.workflow_id IN (${placeholders})
+        WHERE wr.workflow_id IN (${placeholders})
 
           AND wr.created_at >= ?
 

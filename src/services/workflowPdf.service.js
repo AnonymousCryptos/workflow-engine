@@ -828,30 +828,26 @@ async function drawArrayTable(
         tableColumns.map(
             (column) => {
                 if (
+                    column.key === "__sku_image"
+                ) {
+                    return 140;
+                }
+
+                if (
                     column.key === "sku"
                 ) {
-                    return 125;
+                    return 110;
                 }
 
                 if (
-                    column.key ===
-                    "__sku_image"
+                    column.dataType === "number"
                 ) {
-                    return 70;
+                    return 65;
                 }
 
                 if (
-                    column.dataType ===
-                    "number"
-                ) {
-                    return 75;
-                }
-
-                if (
-                    column.key ===
-                        "godown" ||
-                    column.key ===
-                        "rack"
+                    column.key === "godown" ||
+                    column.key === "rack"
                 ) {
                     return 90;
                 }
@@ -908,9 +904,8 @@ async function drawArrayTable(
         );
 
     const scale =
-        actualTotal > tableWidth
-            ? tableWidth /
-              actualTotal
+        actualTotal > 0
+            ? tableWidth / actualTotal
             : 1;
 
     const finalWidths =

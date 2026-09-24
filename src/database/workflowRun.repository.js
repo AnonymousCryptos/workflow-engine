@@ -678,7 +678,7 @@ export async function getWorkflowStageHistory({
         }
     });
 
-    let usersMap =
+       let usersMap =
         new Map();
 
     if (
@@ -713,6 +713,139 @@ export async function getWorkflowStageHistory({
         );
     }
 
+    /*
+     * Resolve Godown and Rack IDs
+     * used inside stageData.items.
+     */
+    const godownIds =
+        new Set();
+
+    const rackIds =
+        new Set();
+
+    rows.forEach((stage) => {
+        let stageData =
+            stage.stage_data;
+
+        if (
+            typeof stageData ===
+            "string"
+        ) {
+            try {
+                stageData =
+                    JSON.parse(
+                        stageData
+                    );
+            } catch {
+                return;
+            }
+        }
+
+        if (
+            Array.isArray(
+                stageData?.items
+            )
+        ) {
+            stageData.items.forEach(
+                (item) => {
+                    if (
+                        item?.godown !==
+                            undefined &&
+                        item?.godown !==
+                            null &&
+                        item?.godown !== ""
+                    ) {
+                        godownIds.add(
+                            Number(
+                                item.godown
+                            )
+                        );
+                    }
+
+                    if (
+                        item?.rack !==
+                            undefined &&
+                        item?.rack !==
+                            null &&
+                        item?.rack !== ""
+                    ) {
+                        rackIds.add(
+                            Number(
+                                item.rack
+                            )
+                        );
+                    }
+                }
+            );
+        }
+    });
+
+    let godownsMap =
+        new Map();
+
+    let racksMap =
+        new Map();
+
+    if (godownIds.size > 0) {
+        const [godowns] =
+            await pool.query(
+                `
+                SELECT
+                    id,
+                    name
+                FROM godowns
+                WHERE id IN (?)
+                `,
+                [
+                    [
+                        ...godownIds
+                    ]
+                ]
+            );
+
+        godownsMap =
+            new Map(
+                godowns.map(
+                    (godown) => [
+                        Number(
+                            godown.id
+                        ),
+                        godown.name
+                    ]
+                )
+            );
+    }
+
+    if (rackIds.size > 0) {
+        const [racks] =
+            await pool.query(
+                `
+                SELECT
+                    id,
+                    name
+                FROM racks
+                WHERE id IN (?)
+                `,
+                [
+                    [
+                        ...rackIds
+                    ]
+                ]
+            );
+
+        racksMap =
+            new Map(
+                racks.map(
+                    (rack) => [
+                        Number(
+                            rack.id
+                        ),
+                        rack.name
+                    ]
+                )
+            );
+    }
+
     return {
         rows: rows.map((stage) => {
             let stageData =
@@ -733,7 +866,7 @@ export async function getWorkflowStageHistory({
                 }
             }
 
-            if (
+                        if (
                 Array.isArray(
                     stageData?.assigned_users
                 )
@@ -749,6 +882,41 @@ export async function getWorkflowStageHistory({
                                 ),
                                 name: `User ${userId}`
                             }
+                    );
+            }
+
+            if (
+                Array.isArray(
+                    stageData?.items
+                )
+            ) {
+                stageData.items =
+                    stageData.items.map(
+                        (item) => {
+                            const {
+                                godown,
+                                rack,
+                                ...otherFields
+                            } = item;
+
+                            return {
+                                ...otherFields,
+                                godown:
+                                    godownsMap.get(
+                                        Number(
+                                            godown
+                                        )
+                                    ) ||
+                                    godown,
+                                rack:
+                                    racksMap.get(
+                                        Number(
+                                            rack
+                                        )
+                                    ) ||
+                                    rack
+                            };
+                        }
                     );
             }
 
